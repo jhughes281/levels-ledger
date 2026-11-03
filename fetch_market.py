@@ -31,6 +31,9 @@ def fetch(sym):
             h, l, c = meta.get("regularMarketDayHigh"), meta.get("regularMarketDayLow"), meta.get("regularMarketPrice")
         if None in (o, h, l, c):
             continue
+        if candles and not (l <= o <= h):
+            # Early in the session Yahoo sometimes repeats the prior day's open; fall back to the prior close.
+            o = min(max(candles[-1][4], l), h)
         candles.append([d, round(o, 2), round(h, 2), round(l, 2), round(c, 2)])
     return {
         "candles": candles[-KEEP:],

@@ -169,6 +169,15 @@ h1 .amp{color:var(--accent);font-weight:600}
 .rr b{color:var(--ink);font-weight:500}
 .spread{border-top:0;padding-top:0}
 .grade,.ticket .tag{white-space:nowrap}
+.status{display:flex;gap:8px;align-items:baseline;font-size:var(--s2);font-weight:500}
+.st-dot{width:8px;height:8px;border-radius:50%;flex:none;transform:translateY(-1px)}
+.st-wait .st-dot{background:var(--muted)}
+.st-past .st-dot{background:var(--pdh)}
+.st-past{color:var(--pdh)}
+.st-done{color:var(--muted)}
+.st-done .st-dot{background:var(--line)}
+.nowline{display:flex;flex-wrap:wrap;justify-content:space-between;gap:4px 12px;padding:8px 10px;border-radius:4px;background:var(--sunk)}
+.nowline b{font-weight:500}
 .grade{font-family:var(--display);font-weight:700;font-size:var(--s2);letter-spacing:.03em;padding:2px 9px;border-radius:3px;border:1.5px solid currentColor}
 .grade.g-A{background:var(--ink);color:var(--paper);border-color:var(--ink)}
 .grade.g-B{color:var(--ink)}
@@ -503,7 +512,15 @@ function renderTickets(){
     {tag:"Pivot reclaim", type:"C", trig:a.P, text:`Retest of pivot ${f2(a.P)} that holds from above`},
     {tag:"Pivot reject", type:"P", trig:a.P, text:`Retest of pivot ${f2(a.P)} that fails from below`},
   ];
-  const ref = a.partial ? a.last : a.C;
+  const ref = a.last;
+  // time left for pricing at the current price: real clock during the session, full day before it
+  const now = ctNow(); const onSession = now.date===a.session;
+  const closed = onSession && now.mins>=900, live = onSession && now.mins>=510 && now.mins<900;
+  const hoursNow = live ? (900-now.mins)/60 : closed ? 0.1 : 6.5;
+  const Tnow = (hoursNow/6.5 + dte)/252;
+  const pxTime = new Date(state.market.tickers[a.sym].marketTime).toLocaleTimeString("en-US",{timeZone:"America/Chicago",hour:"numeric",minute:"2-digit"});
+  const pxDay = new Date(state.market.tickers[a.sym].marketTime).toLocaleDateString("en-CA",{timeZone:"America/Chicago"});
+  const pxLabel = `${f2(ref)} as of ${pxDay===now.date?"":shortD(pxDay)+" "}${pxTime} CT`;
   const built = setups.map(s => {
     const call = s.type==="C"; const K = strikeFor(s.trig,s.type);
     const tgt = call ? nextUp(s.trig) : nextDn(s.trig); const stp = call ? s.trig - a.em*0.25 : s.trig + a.em*0.25;
@@ -519,15 +536,24 @@ function renderTickets(){
       {ok: Math.abs(e.d)>=0.35 && Math.abs(e.d)<=0.65, txt:`Delta ${Math.abs(e.d).toFixed(2)} (0.35–0.65 band)`},
     ];
     const score = checks.filter(c=>c.ok).length;
-    return {s,call,K,K2,tgt,stp,e,atT,atS,spr,gain,loss,rr,gw,checks,score,grade:"DDCBA"[score]};
+    // where the price is now relative to this setup's trigger
+    const d = ref - s.trig, past = call ? d>=0 : d<=0, gap = f2(Math.abs(d));
+    const pivot = s.tag.startsWith("Pivot");
+    const status = closed ? {k:"done", txt:`Session over · last ${pxLabel}`}
+      : past ? {k:"past", txt: pivot ? `Price is ${gap} ${call?"above":"below"} the pivot · watch for the retest` : `Past trigger · price ${gap} ${call?"above":"below"} ${f2(s.trig)}`}
+      : {k:"wait", txt: pivot ? `Waiting · price ${gap} ${call?"below":"above"} the pivot, needs to ${call?"reclaim":"lose"} it first` : `Waiting · price ${gap} ${call?"below":"above"} trigger`};
+    const nowOpt = bs(ref,K,Tnow,a.vol,s.type);
+    return {s,call,K,K2,tgt,stp,e,atT,atS,spr,gain,loss,rr,gw,checks,score,grade:"DDCBA"[score],status,nowOpt};
   }).sort((p,q)=>q.score-p.score || q.rr-p.rr);
-  $("#tickets").innerHTML = built.map(({s,call,K,K2,tgt,stp,e,atT,atS,spr,gain,loss,rr,gw,checks,score,grade}) => {
+  $("#tickets").innerHTML = `<p class="small muted" style="margin:0">Last price ${pxLabel}${live?"":onSession&&!closed?" · before the open":""}</p>` + built.map(({s,call,K,K2,tgt,stp,e,atT,atS,spr,gain,loss,rr,gw,checks,score,grade,status,nowOpt}) => {
     return `<article class="ticket ${call?"is-call":"is-put"}">
       <div style="display:flex;flex-wrap:wrap;justify-content:space-between;align-items:center;gap:8px"><span style="display:flex;flex-wrap:wrap;gap:6px;align-items:center"><span class="grade g-${grade}" title="Meets ${score} of 4 rules">Grade ${grade}</span><span class="tag">${call?"▲":"▼"} ${s.tag}</span></span><span class="small muted num">exp ${mmdd(exp)}${dte===0?" · 0DTE":""}</span></div>
       <div class="contract"><span>${a.sym}</span> ${mmdd(exp)} <b>${K}${s.type}</b></div>
       <div class="trigger">${esc(s.text)}</div>
+      <div class="status st-${status.k}"><span class="st-dot" aria-hidden="true"></span><span>${status.txt}</span></div>
+      <div class="nowline small"><span class="muted">At last price ${f2(ref)}</span><b class="num">$${f2(nowOpt.p)} · $${Math.round(nowOpt.p*100)}/contract · Δ ${nowOpt.d.toFixed(2)}</b></div>
       <div class="kv small">
-        <div><span class="muted">Est. premium</span><b>$${f2(e.p)}</b></div>
+        <div><span class="muted">Premium at trigger</span><b>$${f2(e.p)}</b></div>
         <div><span class="muted">Cost / contract</span><b>$${Math.round(e.p*100)}</b></div>
         <div><span class="muted">Delta</span><b>${e.d.toFixed(2)}</b></div>
         <div><span class="muted">Stock target</span><b>${f2(tgt)}</b></div>
@@ -729,7 +755,7 @@ $("#tab-levels").onclick=()=>showTab("levels"); $("#tab-journal").onclick=()=>sh
 
 /* ---------- boot ---------- */
 resetTradeForm(); $("#dep-date").value=todayISO();
-loadLocal(); renderJournal(); renderStatus(); setInterval(renderStatus,30000);
+loadLocal(); renderJournal(); renderStatus(); setInterval(renderStatus,30000); setInterval(()=>{ if(state.market) renderTickets(); },60000);
 showTab(location.hash==="#journal"?"journal":"levels");
 
 (async () => {
