@@ -168,6 +168,18 @@ h1 .amp{color:var(--accent);font-weight:600}
 .rr-gain{background:var(--up);opacity:.85}
 .rr b{color:var(--ink);font-weight:500}
 .spread{border-top:0;padding-top:0}
+.grade,.ticket .tag{white-space:nowrap}
+.grade{font-family:var(--display);font-weight:700;font-size:var(--s2);letter-spacing:.03em;padding:2px 9px;border-radius:3px;border:1.5px solid currentColor}
+.grade.g-A{background:var(--ink);color:var(--paper);border-color:var(--ink)}
+.grade.g-B{color:var(--ink)}
+.grade.g-C{color:var(--muted)}
+.grade.g-D{color:var(--muted);border-style:dashed}
+.checks{list-style:none;margin:0;padding:0;display:grid;gap:3px;font-size:var(--s1)}
+.checks li{display:flex;gap:7px;align-items:baseline}
+.checks li span{width:12px;flex:none;font-weight:700}
+.checks .ok span{color:var(--up)}
+.checks .no{color:var(--muted)}
+.checks .no span{color:var(--down)}
 tbody tr:hover td{background:var(--sunk)}
 td:first-child{font-family:var(--display);font-weight:700;font-size:var(--s3);letter-spacing:.03em}
 .tile{gap:6px;padding:16px 18px}
@@ -228,7 +240,7 @@ td:first-child{font-family:var(--display);font-weight:700;font-size:var(--s3);le
           <div class="field" style="max-width:110px"><label for="entry-time">Trigger after</label><input id="entry-time" type="time" value="08:45"></div>
         </div>
         <div class="tickets" id="tickets"><div class="empty">Setups appear once market data loads.</div></div>
-        <p class="note" style="margin:12px 0 0">These are mechanical if-then setups built from the levels, not recommendations. Premiums are Black-Scholes estimates from the vol above; real quotes, spreads and fills will differ. Check the live chain before you trade.</p>
+        <p class="note" style="margin:12px 0 0">These are mechanical if-then setups built from the levels, not recommendations. Grades count how many of four fixed rules a setup meets (4 = A, 3 = B, 2 = C, 1 or 0 = D), and setups are sorted by grade. They are for reference only. Premiums are Black-Scholes estimates from the vol above; real quotes, spreads and fills will differ. Check the live chain before you trade.</p>
       </div>
     </div>
 
@@ -491,15 +503,27 @@ function renderTickets(){
     {tag:"Pivot reclaim", type:"C", trig:a.P, text:`Retest of pivot ${f2(a.P)} that holds from above`},
     {tag:"Pivot reject", type:"P", trig:a.P, text:`Retest of pivot ${f2(a.P)} that fails from below`},
   ];
-  $("#tickets").innerHTML = setups.map(s => {
+  const ref = a.partial ? a.last : a.C;
+  const built = setups.map(s => {
     const call = s.type==="C"; const K = strikeFor(s.trig,s.type);
     const tgt = call ? nextUp(s.trig) : nextDn(s.trig); const stp = call ? s.trig - a.em*0.25 : s.trig + a.em*0.25;
     const e = bs(s.trig,K,Tentry,a.vol,s.type), atT = bs(tgt,K,Tlater,a.vol,s.type).p, atS = bs(stp,K,Tlater,a.vol,s.type).p;
     const K2 = call?K+5:K-5; const spr = e.p - bs(s.trig,K2,Tentry,a.vol,s.type).p;
     const gain = (atT/e.p-1)*100, loss=(atS/e.p-1)*100;
     const rr = loss<0 ? gain/Math.abs(loss) : 0, gw = Math.min(100, gain/(gain+Math.abs(loss))*100);
+    // Grade = how many of four fixed rules the setup meets. Reference only.
+    const checks = [
+      {ok: rr>=2, txt:`Reward:risk ${rr.toFixed(1)} (needs 2.0+)`},
+      {ok: call ? a.C>=a.sma20 : a.C<a.sma20, txt:`${call?"Call":"Put"} with the 20-day trend (close ${a.C>=a.sma20?"above":"below"} ${f2(a.sma20)})`},
+      {ok: Math.abs(s.trig-ref)<=a.em, txt:`Trigger ${f2(Math.abs(s.trig-ref))} from last price (within ±${f2(a.em)} move)`},
+      {ok: Math.abs(e.d)>=0.35 && Math.abs(e.d)<=0.65, txt:`Delta ${Math.abs(e.d).toFixed(2)} (0.35–0.65 band)`},
+    ];
+    const score = checks.filter(c=>c.ok).length;
+    return {s,call,K,K2,tgt,stp,e,atT,atS,spr,gain,loss,rr,gw,checks,score,grade:"DDCBA"[score]};
+  }).sort((p,q)=>q.score-p.score || q.rr-p.rr);
+  $("#tickets").innerHTML = built.map(({s,call,K,K2,tgt,stp,e,atT,atS,spr,gain,loss,rr,gw,checks,score,grade}) => {
     return `<article class="ticket ${call?"is-call":"is-put"}">
-      <div style="display:flex;justify-content:space-between;align-items:center;gap:8px"><span class="tag">${call?"▲":"▼"} ${s.tag}</span><span class="small muted num">exp ${mmdd(exp)}${dte===0?" · 0DTE":""}</span></div>
+      <div style="display:flex;flex-wrap:wrap;justify-content:space-between;align-items:center;gap:8px"><span style="display:flex;flex-wrap:wrap;gap:6px;align-items:center"><span class="grade g-${grade}" title="Meets ${score} of 4 rules">Grade ${grade}</span><span class="tag">${call?"▲":"▼"} ${s.tag}</span></span><span class="small muted num">exp ${mmdd(exp)}${dte===0?" · 0DTE":""}</span></div>
       <div class="contract"><span>${a.sym}</span> ${mmdd(exp)} <b>${K}${s.type}</b></div>
       <div class="trigger">${esc(s.text)}</div>
       <div class="kv small">
@@ -515,6 +539,7 @@ function renderTickets(){
       </div>
       <div class="rr"><div class="rr-bar"><span class="rr-loss" style="width:${100-gw}%"></span><span class="rr-gain" style="width:${gw}%"></span></div>
         <span class="small num muted">reward : risk <b>${rr.toFixed(1)} : 1</b></span></div>
+      <ul class="checks">${checks.map(c=>`<li class="${c.ok?"ok":"no"}"><span aria-hidden="true">${c.ok?"✓":"✕"}</span>${c.txt}</li>`).join("")}</ul>
       <div class="spread">Defined-risk version: buy ${K}${s.type} / sell ${K2}${s.type} spread · about $${Math.round(spr*100)} to make up to $500</div>
     </article>`;
   }).join("");
