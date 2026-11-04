@@ -175,7 +175,12 @@ h1 .amp{color:var(--accent);font-weight:600}
 #replay-table td{vertical-align:middle}
 #replay-table td:first-child{font-family:var(--mono);font-weight:500;font-size:var(--s2);letter-spacing:0}
 #replay-table tr.untrig td{opacity:.6}
-@media (max-width:560px){.replay-sum{grid-template-columns:repeat(2,minmax(0,1fr))}}
+.replay-sum div .small{font-size:11px}
+.bt-cmp th.grp{text-align:center;border-bottom:1px solid var(--line)}
+.bt-cmp td:first-child{white-space:normal;min-width:220px;font-family:var(--body);font-weight:400;font-size:var(--s2);letter-spacing:0}
+.bt-cmp tr.is-base td{background:var(--sunk);font-weight:600}
+@media (max-width:900px){#bt .replay-sum{grid-template-columns:repeat(3,minmax(0,1fr))!important}}
+@media (max-width:560px){.replay-sum,#bt .replay-sum{grid-template-columns:repeat(2,minmax(0,1fr))!important}}
 .status{display:flex;gap:8px;align-items:baseline;font-size:var(--s2);font-weight:500}
 .st-dot{width:8px;height:8px;border-radius:50%;flex:none;transform:translateY(-1px)}
 .st-wait .st-dot{background:var(--muted)}
@@ -272,6 +277,11 @@ td:first-child{font-family:var(--display);font-weight:700;font-size:var(--s3);le
       <div id="replay-sum"></div>
       <div class="tablewrap"><table id="replay-table"><thead><tr><th>Setup</th><th>Grade</th><th>Result</th><th>Entry CT</th><th>Exit CT</th><th>Option est.</th><th>P&amp;L / contract</th></tr></thead><tbody><tr><td colspan="7" style="text-align:left;font-family:var(--body)" class="muted">The replay appears after the next data refresh.</td></tr></tbody></table></div>
       <p class="note" style="margin:12px 0 0">Each setup is replayed on that session's 5-minute bars with the page's own rules: same-day expiry, entry on the first 5-minute close that meets the trigger at or after 8:45 CT, then the target or the stop, whichever came first (the stop if both hit in one bar), otherwise held to the 3:00 close. Option prices are model estimates, not real fills, and one session says little about how a grade holds up.</p>
+    </div>
+
+    <div class="panel" id="bt">
+      <div class="panel-head"><h2 id="bt-title">Backtest</h2><span class="muted small" id="bt-sub"></span></div>
+      <div id="bt-body"><div class="empty">The backtest appears after the next data refresh.</div></div>
     </div>
   </section>
 
@@ -597,7 +607,7 @@ function renderLevels(){
   const a = analyse(state.sel);
   const age = (Date.now() - Date.parse(state.market.updatedAt))/36e5;
   $("#sub").innerHTML = `${new Date(parseD(a.session)).toLocaleDateString("en-US",{weekday:"long",month:"short",day:"numeric"})} · levels from the ${shortD(a.from)} close · data updated ${esc(state.market.updatedAtET)}${age>20?' <b class="down">(over 20 hours old)</b>':""}`;
-  renderTickers(); renderChart(); renderTickets(); renderLevelTable(); renderReplay();
+  renderTickers(); renderChart(); renderTickets(); renderLevelTable(); renderReplay(); renderBacktest();
 }
 
 function renderReplay(){
@@ -625,6 +635,56 @@ function renderReplay(){
       <td>${t?`$${f2(r.optIn)} → $${f2(r.optOut)}`:"—"}</td><td class="${t?cls(r.pl):""}">${t?smoney(r.pl):"—"}</td></tr>`; }).join("")
     || `<tr><td colspan="7" class="muted" style="text-align:left;font-family:var(--body)">No setups in this filter.</td></tr>`;
 }
+function renderBacktest(){
+  const bt = state.market && state.market.backtest; if (!bt) return;
+  const by = state.btBy || "grade";
+  const pctx = v => v==null ? "—" : Math.round(v*100)+"%";
+  const m = v => v==null ? "—" : smoney(v);
+  const b = bt.base;
+  $("#bt-title").textContent = `Backtest · ${bt.sessions} sessions`;
+  $("#bt-sub").textContent = `${shortD(bt.from)} – ${shortD(bt.to)} · QQQ, SPY, GLD · 4 setups a day each`;
+  // cumulative P&L line under the current rules
+  let run=0; const pts = bt.daily.map(([d,v])=>[d, run+=v]);
+  const W=720,H=180,Lp=60,Rp=10,T=10,B=24, lo=Math.min(0,...pts.map(p=>p[1])), hi=Math.max(0,...pts.map(p=>p[1]));
+  const x=i=>Lp+i/(pts.length-1)*(W-Lp-Rp), y=v=>T+(hi-v)/((hi-lo)||1)*(H-T-B);
+  const line = pts.map((p,i)=>(i?"L":"M")+x(i).toFixed(1)+","+y(p[1]).toFixed(1)).join("");
+  const col = run>=0?"var(--up)":"var(--down)";
+  let g = niceTicks(lo,hi,4).map(v=>`<line x1="${Lp}" x2="${W-Rp}" y1="${y(v)}" y2="${y(v)}" stroke="var(--line)" ${v===0?'stroke-width="1.5"':''}/><text x="${Lp-6}" y="${y(v)+4}" text-anchor="end" font-size="11" fill="var(--muted)" font-family="var(--mono)">${v<0?"−":""}$${Math.abs(Math.round(v)).toLocaleString()}</text>`).join("");
+  const si = pts.findIndex(p=>p[0]>=bt.splitAt);
+  if (si>0) g += `<line x1="${x(si)}" x2="${x(si)}" y1="${T}" y2="${H-B}" stroke="var(--muted)" stroke-dasharray="3 3"/><text x="${x(si)+4}" y="${T+10}" font-size="11" fill="var(--muted)">later third</text>`;
+  g += `<path d="${line}L${x(pts.length-1)},${y(0)}L${x(0)},${y(0)}Z" fill="${col}" opacity=".1"/><path d="${line}" fill="none" stroke="${col}" stroke-width="2"/>`;
+  g += `<circle cx="${x(pts.length-1)}" cy="${y(run)}" r="3.5" fill="${col}"/>`;
+  g += `<text x="${Lp}" y="${H-6}" font-size="11" fill="var(--muted)">${shortD(pts[0][0])}</text><text x="${W-Rp}" y="${H-6}" font-size="11" fill="var(--muted)" text-anchor="end">${shortD(pts[pts.length-1][0])}</text>`;
+  const labels = {grade:"Grade", setup:"Setup", side:"Side", ticker:"Ticker"};
+  const name = (k,v) => k==="side" ? (v==="C"?"Calls":"Puts") : k==="grade" ? `<span class="grade g-${v}">${v}</span>` : v;
+  const groupRows = Object.entries(bt.by[by]).map(([k,s])=>`<tr><td>${name(by,k)}</td><td>${s.trades}</td><td>${pctx(s.winRate)}</td><td class="up">${m(s.avgWin)}</td><td class="down">${m(s.avgLoss)}</td><td class="${cls(s.avg)}">${m(s.avg)}</td><td class="${cls(s.total)}">${s.trades?m(s.total):"—"}</td></tr>`).join("");
+  const base = bt.variants.find(v=>v.key==="base");
+  const best = [...bt.variants].sort((p,q)=>(q.earlier.avg??-1e9)-(p.earlier.avg??-1e9))[0];
+  const cmp = (v,part) => { const s=v[part], b0=base[part]; const better = v.key!=="base" && s.avg!=null && b0.avg!=null && s.avg>b0.avg;
+    return `<td>${s.trades}</td><td>${pctx(s.winRate)}</td><td class="${cls(s.avg)}">${m(s.avg)}${v.key!=="base"&&s.avg!=null&&b0.avg!=null?` <span class="small ${better?"up":"down"}">${better?"▲":"▼"}</span>`:""}</td>`; };
+  $("#bt-body").innerHTML = `
+    <div class="replay-sum" style="grid-template-columns:repeat(6,minmax(0,1fr))">
+      <div><span class="label">Trades</span><b class="num">${b.trades}</b><span class="small muted">of ${b.setups} setups</span></div>
+      <div><span class="label">Win rate</span><b class="num">${pctx(b.winRate)}</b></div>
+      <div><span class="label">Avg win</span><b class="num up">${m(b.avgWin)}</b></div>
+      <div><span class="label">Avg loss</span><b class="num down">${m(b.avgLoss)}</b></div>
+      <div><span class="label">Avg per trade</span><b class="num ${cls(b.avg)}">${m(b.avg)}</b></div>
+      <div><span class="label">Total, 1 contract</span><b class="num ${cls(b.total)}">${m(b.total)}</b></div>
+    </div>
+    <h3 style="margin:14px 0 6px">Running total, current rules</h3>
+    <svg viewBox="0 0 ${W} ${H}" style="width:100%;height:auto;display:block" role="img" aria-label="Cumulative estimated P&L across the backtest">${g}</svg>
+    <div class="panel-head" style="margin:18px 0 6px"><h3>Breakdown, current rules</h3>
+      <div class="seg" id="bt-by">${Object.entries(labels).map(([k,l])=>`<button data-by="${k}" aria-pressed="${k===by}">${l}</button>`).join("")}</div></div>
+    <div class="tablewrap"><table><thead><tr><th>${labels[by]}</th><th>Trades</th><th>Win rate</th><th>Avg win</th><th>Avg loss</th><th>Avg / trade</th><th>Total</th></tr></thead><tbody>${groupRows}</tbody></table></div>
+    <div class="panel-head" style="margin:18px 0 6px"><h3>Compare rule changes</h3><span class="small muted">Each row changes one rule. ▲/▼ = avg per trade vs. current rules.</span></div>
+    <div class="tablewrap"><table class="bt-cmp"><thead>
+      <tr><th rowspan="2">Rule</th><th colspan="3" class="grp">Earlier: ${shortD(bt.from)} – before ${shortD(bt.splitAt)}</th><th colspan="3" class="grp">Later: ${shortD(bt.splitAt)} – ${shortD(bt.to)}</th></tr>
+      <tr><th>Trades</th><th>Win</th><th>Avg</th><th>Trades</th><th>Win</th><th>Avg</th></tr></thead>
+      <tbody>${bt.variants.map(v=>`<tr class="${v.key==="base"?"is-base":""}"><td>${esc(v.label)}${v.key===best.key?' <span class="pill">best earlier</span>':""}</td>${cmp(v,"earlier")}${cmp(v,"later")}</tr>`).join("")}</tbody></table></div>
+    <p class="note" style="margin:12px 0 0">Pick a rule change from the earlier sessions, then check it on the later ones it wasn't picked from. A change that only wins in the earlier columns is probably luck. All option prices are Black-Scholes estimates at the same volatility with no bid/ask spread or fees, so real results would be worse than shown. Past results don't predict future ones.</p>`;
+  document.querySelectorAll("#bt-by button").forEach(btn=>btn.onclick=()=>{ state.btBy=btn.dataset.by; renderBacktest(); });
+}
+
 const fmtCT = s => { const [h,m]=s.split(":").map(Number); return `${(h+11)%12+1}:${pad(m)}`; };
 document.querySelectorAll("#replay-filter button").forEach(b=>b.onclick=()=>{ state.replayFilter=b.dataset.f; document.querySelectorAll("#replay-filter button").forEach(x=>x.setAttribute("aria-pressed",x===b)); renderReplay(); });
 
