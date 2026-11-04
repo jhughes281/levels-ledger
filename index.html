@@ -658,9 +658,13 @@ function renderBacktest(){
   const labels = {grade:"Grade", setup:"Setup", side:"Side", ticker:"Ticker"};
   const name = (k,v) => k==="side" ? (v==="C"?"Calls":"Puts") : k==="grade" ? `<span class="grade g-${v}">${v}</span>` : v;
   const groupRows = Object.entries(bt.by[by]).map(([k,s])=>`<tr><td>${name(by,k)}</td><td>${s.trades}</td><td>${pctx(s.winRate)}</td><td class="up">${m(s.avgWin)}</td><td class="down">${m(s.avgLoss)}</td><td class="${cls(s.avg)}">${m(s.avg)}</td><td class="${cls(s.total)}">${s.trades?m(s.total):"—"}</td></tr>`).join("");
-  const base = bt.variants.find(v=>v.key==="base");
-  const best = [...bt.variants].sort((p,q)=>(q.earlier.avg??-1e9)-(p.earlier.avg??-1e9))[0];
-  const cmp = (v,part) => { const s=v[part], b0=base[part]; const better = v.key!=="base" && s.avg!=null && b0.avg!=null && s.avg>b0.avg;
+  const scope = state.btScope || "all";
+  const pick = v => scope==="all" ? v : (scope==="C"||scope==="P") ? (v.bySide||{})[scope] : (v.bySetup||{})[scope];
+  const variants = bt.variants.filter(v=>pick(v));
+  const base = pick(bt.variants.find(v=>v.key==="base"));
+  const best = [...variants].sort((p,q)=>(pick(q).earlier.avg??-1e9)-(pick(p).earlier.avg??-1e9))[0];
+  const scopes = [["all","All"],["C","Calls"],["P","Puts"],["PDH breakout","PDH breakout"],["PDL breakdown","PDL breakdown"],["Pivot reclaim","Pivot reclaim"],["Pivot reject","Pivot reject"]];
+  const cmp = (v,part) => { const s=pick(v)[part], b0=base[part]; const better = v.key!=="base" && s.avg!=null && b0.avg!=null && s.avg>b0.avg;
     return `<td>${s.trades}</td><td>${pctx(s.winRate)}</td><td class="${cls(s.avg)}">${m(s.avg)}${v.key!=="base"&&s.avg!=null&&b0.avg!=null?` <span class="small ${better?"up":"down"}">${better?"▲":"▼"}</span>`:""}</td>`; };
   $("#bt-body").innerHTML = `
     <div class="replay-sum" style="grid-template-columns:repeat(6,minmax(0,1fr))">
@@ -677,12 +681,14 @@ function renderBacktest(){
       <div class="seg" id="bt-by">${Object.entries(labels).map(([k,l])=>`<button data-by="${k}" aria-pressed="${k===by}">${l}</button>`).join("")}</div></div>
     <div class="tablewrap"><table><thead><tr><th>${labels[by]}</th><th>Trades</th><th>Win rate</th><th>Avg win</th><th>Avg loss</th><th>Avg / trade</th><th>Total</th></tr></thead><tbody>${groupRows}</tbody></table></div>
     <div class="panel-head" style="margin:18px 0 6px"><h3>Compare rule changes</h3><span class="small muted">Each row changes one rule. ▲/▼ = avg per trade vs. current rules.</span></div>
+    <div class="seg" id="bt-scope" style="flex-wrap:wrap;margin-bottom:8px">${scopes.map(([k,l])=>`<button data-scope="${k}" aria-pressed="${k===scope}">${l}</button>`).join("")}</div>
     <div class="tablewrap"><table class="bt-cmp"><thead>
       <tr><th rowspan="2">Rule</th><th colspan="3" class="grp">Earlier: ${shortD(bt.from)} – before ${shortD(bt.splitAt)}</th><th colspan="3" class="grp">Later: ${shortD(bt.splitAt)} – ${shortD(bt.to)}</th></tr>
       <tr><th>Trades</th><th>Win</th><th>Avg</th><th>Trades</th><th>Win</th><th>Avg</th></tr></thead>
-      <tbody>${bt.variants.map(v=>`<tr class="${v.key==="base"?"is-base":""}"><td>${esc(v.label)}${v.key===best.key?' <span class="pill">best earlier</span>':""}</td>${cmp(v,"earlier")}${cmp(v,"later")}</tr>`).join("")}</tbody></table></div>
-    <p class="note" style="margin:12px 0 0">Pick a rule change from the earlier sessions, then check it on the later ones it wasn't picked from. A change that only wins in the earlier columns is probably luck. All option prices are Black-Scholes estimates at the same volatility with no bid/ask spread or fees, so real results would be worse than shown. Past results don't predict future ones.</p>`;
+      <tbody>${variants.map(v=>`<tr class="${v.key==="base"?"is-base":""}"><td>${esc(v.label)}${v.key===best.key?' <span class="pill">best earlier</span>':""}</td>${cmp(v,"earlier")}${cmp(v,"later")}</tr>`).join("")}</tbody></table></div>
+    <p class="note" style="margin:12px 0 0">Pick a rule change from the earlier sessions, then check it on the later ones it wasn't picked from. A change that only wins in the earlier columns is probably luck, and so is any result built on a handful of trades. All option prices are Black-Scholes estimates at the same volatility with no bid/ask spread or fees, so real results would be worse than shown. Past results don't predict future ones.</p>`;
   document.querySelectorAll("#bt-by button").forEach(btn=>btn.onclick=()=>{ state.btBy=btn.dataset.by; renderBacktest(); });
+  document.querySelectorAll("#bt-scope button").forEach(btn=>btn.onclick=()=>{ state.btScope=btn.dataset.scope; renderBacktest(); });
 }
 
 const fmtCT = s => { const [h,m]=s.split(":").map(Number); return `${(h+11)%12+1}:${pad(m)}`; };

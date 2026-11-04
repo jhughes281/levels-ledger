@@ -85,7 +85,7 @@ def _T(t_end, dte):
     return (max(0.0, 16 * 60 - (t_end.hour * 60 + t_end.minute)) / 60 / 6.5 + dte) / 252
 
 
-BASE = {"dte": 0, "tgt": 1.0, "stop": 0.25, "entry": (9, 45), "timeStop": None}
+BASE = {"dte": 0, "tgt": 1.0, "stop": 0.25, "entry": (9, 45), "timeStop": None, "minTgt": 0.15, "skipNear": None}
 # Each variant changes one rule from BASE. Times are ET bar-close times (CT + 1 hour).
 VARIANTS = [
     ("base", "Current rules (0DTE, next-level target, stop ¼ move, enter from 8:45 CT, hold to close)", {}),
@@ -95,6 +95,9 @@ VARIANTS = [
     ("wide", "Wider stop: ½ expected move", {"stop": 0.5}),
     ("late", "Enter only from 9:30 CT", {"entry": (10, 30)}),
     ("tstop", "Time stop: exit at 11:00 CT if nothing hit", {"timeStop": (12, 0)}),
+    ("min35", "Target at least ⅓ of the expected move away", {"minTgt": 0.35}),
+    ("min50", "Target at least ½ of the expected move away", {"minTgt": 0.5}),
+    ("skip", "Skip setups whose next level is under ½ move away", {"skipNear": 0.5}),
 ]
 
 
@@ -130,10 +133,14 @@ def simulate(sym, lv, bars, rules):
         rr = gain / abs(loss) if loss < 0 else 0
         score = sum([rr >= 2, (C >= lv["sma20"]) if call else (C < lv["sma20"]), abs(trig - C) <= em, 0.35 <= abs(dlt) <= 0.65])
         # this variant's rules
-        tgt = trig + (full_tgt - trig) * rules["tgt"]
+        far = max(0.5, rules["minTgt"])
+        level_tgt = next((u for u in ups if u > trig + em * rules["minTgt"]), trig + em * far) if call else next((u for u in dns if u < trig - em * rules["minTgt"]), trig - em * far)
+        tgt = trig + (level_tgt - trig) * rules["tgt"]
         stp = trig - em * rules["stop"] if call else trig + em * rules["stop"]
         row = {"sym": sym, "setup": tag, "type": typ, "grade": "DDCBA"[score], "strike": K,
                "trigger": round(trig, 2), "target": round(tgt, 2), "stop": round(stp, 2), "result": "untriggered"}
+        if rules["skipNear"] and abs(full_tgt - trig) < em * rules["skipNear"]:
+            row["result"] = "skipped"; rows.append(row); continue
         entry = None
         for i, (t, o, h, l, c) in enumerate(bars):
             end = t + timedelta(minutes=5)
@@ -171,7 +178,7 @@ def simulate(sym, lv, bars, rules):
 
 
 def stats(rows):
-    t = [r for r in rows if r["result"] != "untriggered"]
+    t = [r for r in rows if r["result"] in ("win", "loss")]
     w = [r["pl"] for r in t if r["result"] == "win"]; lo = [r["pl"] for r in t if r["result"] == "loss"]
     return {"setups": len(rows), "trades": len(t), "wins": len(w), "winRate": round(len(w) / len(t), 3) if t else None,
             "avgWin": round(sum(w) / len(w)) if w else None, "avgLoss": round(sum(lo) / len(lo)) if lo else None,
@@ -197,7 +204,10 @@ def backtest(daily, bars5):
                 for r in simulate(s, levels(prior), bars5[s][d], rules):
                     r["date"] = d; rows.append(r)
         earlier = [r for r in rows if r["date"] < split]; later = [r for r in rows if r["date"] >= split]
-        out["variants"].append({"key": key, "label": label, "all": stats(rows), "earlier": stats(earlier), "later": stats(later)})
+        per_setup = {tag: {"earlier": stats([r for r in earlier if r["setup"] == tag]), "later": stats([r for r in later if r["setup"] == tag])} for tag, _, _ in SETUPS}
+        per_side = {side: {"earlier": stats([r for r in earlier if r["type"] == side]), "later": stats([r for r in later if r["type"] == side])} for side in "CP"}
+        out["variants"].append({"key": key, "label": label, "all": stats(rows), "earlier": stats(earlier), "later": stats(later),
+                                "bySetup": per_setup, "bySide": per_side})
         if key == "base":
             base_rows = rows
     # breakdowns and the day-by-day line use the current rules
