@@ -11,7 +11,7 @@ Live artifact: https://claude.ai/artifact/WZV5Am29mEcoJXXMBDnUBb
 
 `index.html` is published as an artifact and uses the claude.ai runtime (`db`, `user`, `sample` capabilities), so it only works inside claude.ai, not as a plain static page.
 
-Market data comes from `fetch_market.py`, which pulls 90 daily candles from Yahoo Finance's chart API and writes `market.json`. That file is loaded into the artifact's database as `market/today`; the page computes every level from those candles. A weekday scheduled task in the Claude desktop app runs this before the open.
+Market data comes from `fetch_market.py`, which pulls 90 daily candles from Yahoo Finance's chart API and writes `market.json`. That file is loaded into the artifact's database as `market/today`; the page computes every level from those candles. The script also replays the last finished session's setups on Yahoo's 5-minute bars (entry, target/stop/close exit, estimated option P&L) and stores the results as `replay`, which the page shows under "How the last session's setups played out". A weekday scheduled task in the Claude desktop app runs this before the open.
 
 ```bash
 python fetch_market.py market.json

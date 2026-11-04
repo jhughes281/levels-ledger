@@ -169,6 +169,13 @@ h1 .amp{color:var(--accent);font-weight:600}
 .rr b{color:var(--ink);font-weight:500}
 .spread{border-top:0;padding-top:0}
 .grade,.ticket .tag{white-space:nowrap}
+.replay-sum{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:12px;padding:12px 0;border-bottom:1px solid var(--line);margin-bottom:6px}
+.replay-sum div{display:grid;gap:2px}
+.replay-sum b{font-family:var(--display);font-size:var(--s5);font-weight:600;line-height:1.1}
+#replay-table td{vertical-align:middle}
+#replay-table td:first-child{font-family:var(--mono);font-weight:500;font-size:var(--s2);letter-spacing:0}
+#replay-table tr.untrig td{opacity:.6}
+@media (max-width:560px){.replay-sum{grid-template-columns:repeat(2,minmax(0,1fr))}}
 .status{display:flex;gap:8px;align-items:baseline;font-size:var(--s2);font-weight:500}
 .st-dot{width:8px;height:8px;border-radius:50%;flex:none;transform:translateY(-1px)}
 .st-wait .st-dot{background:var(--muted)}
@@ -256,7 +263,15 @@ td:first-child{font-family:var(--display);font-weight:700;font-size:var(--s3);le
     <div class="panel">
       <div class="panel-head"><h2>Key levels</h2><span class="muted small" id="levels-from"></span></div>
       <div class="tablewrap"><table id="levels-table"><thead><tr><th>Ticker</th><th>R2</th><th>R1</th><th>PDH</th><th>Pivot</th><th>PDL</th><th>S1</th><th>S2</th><th>EM ±</th></tr></thead><tbody></tbody></table></div>
-      <p class="note" style="margin:12px 0 0">Classic floor pivots from the prior session: Pivot = (H+L+C)/3, R1 = 2P−L, S1 = 2P−H, R2 = P+(H−L), S2 = P−(H−L). Expected move = prior close × vol × √(1/252), with vol from the last 20 daily returns unless you override it.</p>
+      <p class="note" style="margin:12px 0 0" id="pivot-note">Classic floor pivots from the prior session: Pivot = (H+L+C)/3, R1 = 2P−L, S1 = 2P−H, R2 = P+(H−L), S2 = P−(H−L). Expected move = prior close × vol × √(1/252), with vol from the last 20 daily returns unless you override it.</p>
+    </div>
+
+    <div class="panel" id="replay">
+      <div class="panel-head"><h2 id="replay-title">How the last session's setups played out</h2>
+        <div class="seg" id="replay-filter"><button data-f="all" aria-pressed="true">All</button><button data-f="C" aria-pressed="false">Calls</button><button data-f="P" aria-pressed="false">Puts</button></div></div>
+      <div id="replay-sum"></div>
+      <div class="tablewrap"><table id="replay-table"><thead><tr><th>Setup</th><th>Grade</th><th>Result</th><th>Entry CT</th><th>Exit CT</th><th>Option est.</th><th>P&amp;L / contract</th></tr></thead><tbody><tr><td colspan="7" style="text-align:left;font-family:var(--body)" class="muted">The replay appears after the next data refresh.</td></tr></tbody></table></div>
+      <p class="note" style="margin:12px 0 0">Each setup is replayed on that session's 5-minute bars with the page's own rules: same-day expiry, entry on the first 5-minute close that meets the trigger at or after 8:45 CT, then the target or the stop, whichever came first (the stop if both hit in one bar), otherwise held to the 3:00 close. Option prices are model estimates, not real fills, and one session says little about how a grade holds up.</p>
     </div>
   </section>
 
@@ -582,8 +597,36 @@ function renderLevels(){
   const a = analyse(state.sel);
   const age = (Date.now() - Date.parse(state.market.updatedAt))/36e5;
   $("#sub").innerHTML = `${new Date(parseD(a.session)).toLocaleDateString("en-US",{weekday:"long",month:"short",day:"numeric"})} · levels from the ${shortD(a.from)} close · data updated ${esc(state.market.updatedAtET)}${age>20?' <b class="down">(over 20 hours old)</b>':""}`;
-  renderTickers(); renderChart(); renderTickets(); renderLevelTable();
+  renderTickers(); renderChart(); renderTickets(); renderLevelTable(); renderReplay();
 }
+
+function renderReplay(){
+  const rp = state.market && state.market.replay; if (!rp) return;
+  const f = state.replayFilter || "all";
+  const rows = rp.rows.filter(r => f==="all" || r.type===f);
+  $("#replay-title").textContent = `How ${new Date(parseD(rp.session)).toLocaleDateString("en-US",{weekday:"long",month:"short",day:"numeric"})}'s setups played out`;
+  const trig = rows.filter(r=>r.result!=="untriggered"), w = trig.filter(r=>r.result==="win").length, pl = trig.reduce((s,r)=>s+r.pl,0);
+  const byGrade = ["A","B","C","D"].map(g=>{ const t=trig.filter(r=>r.grade===g); return t.length ? `<span class="chip"><span class="grade g-${g}" style="font-size:11px;padding:0 6px">${g}</span>${t.filter(r=>r.result==="win").length}–${t.filter(r=>r.result==="loss").length}</span>` : ""; }).join("");
+  $("#replay-sum").innerHTML = `<div class="replay-sum">
+      <div><span class="label">Triggered</span><b class="num">${trig.length} of ${rows.length}</b></div>
+      <div><span class="label">Won – lost</span><b class="num">${w} – ${trig.length-w}</b></div>
+      <div><span class="label">Win rate</span><b class="num">${trig.length?Math.round(w/trig.length*100)+"%":"—"}</b></div>
+      <div><span class="label">Est. P&amp;L, 1 contract each</span><b class="num ${cls(pl)}">${trig.length?smoney(pl):"—"}</b></div>
+    </div>${byGrade?`<div class="meta" style="margin:10px 0 4px"><span class="small muted">By grade (won–lost):</span>${byGrade}</div>`:""}`;
+  const order = {A:0,B:1,C:2,D:3};
+  const sorted = [...rows].sort((p,q)=>(p.result==="untriggered")-(q.result==="untriggered") || order[p.grade]-order[q.grade]);
+  const why = {target:"hit target", stop:"stopped out", close:"held to close"};
+  $("#replay-table tbody").innerHTML = sorted.map(r=>{
+    const t = r.result!=="untriggered";
+    return `<tr class="${t?"":"untrig"}"><td><span class="${r.type==="C"?"up":"down"}">${r.sym} ${r.strike}${r.type}</span> <span class="muted" style="font-family:var(--body)">${r.setup}</span></td>
+      <td><span class="grade g-${r.grade}">${r.grade}</span></td>
+      <td style="font-family:var(--body)">${t?`<span class="pill ${r.result==="win"?"win":"loss"}">${r.result==="win"?"Win":"Loss"}</span> <span class="muted small">${r.exit==="target"&&r.result==="loss"?"hit target, option still down":why[r.exit]}</span>`:`<span class="muted">Never triggered</span>`}</td>
+      <td>${t?`${fmtCT(r.entryCT)} @ ${f2(r.entryPx)}`:"—"}</td><td>${t?`${fmtCT(r.exitCT)} @ ${f2(r.exitPx)}`:"—"}</td>
+      <td>${t?`$${f2(r.optIn)} → $${f2(r.optOut)}`:"—"}</td><td class="${t?cls(r.pl):""}">${t?smoney(r.pl):"—"}</td></tr>`; }).join("")
+    || `<tr><td colspan="7" class="muted" style="text-align:left;font-family:var(--body)">No setups in this filter.</td></tr>`;
+}
+const fmtCT = s => { const [h,m]=s.split(":").map(Number); return `${(h+11)%12+1}:${pad(m)}`; };
+document.querySelectorAll("#replay-filter button").forEach(b=>b.onclick=()=>{ state.replayFilter=b.dataset.f; document.querySelectorAll("#replay-filter button").forEach(x=>x.setAttribute("aria-pressed",x===b)); renderReplay(); });
 
 $("#dte").onchange = renderTickets;
 $("#entry-time").onchange = renderTickets;
