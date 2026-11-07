@@ -85,10 +85,15 @@ def _T(t_end, dte):
     return (max(0.0, 16 * 60 - (t_end.hour * 60 + t_end.minute)) / 60 / 6.5 + dte) / 252
 
 
-BASE = {"dte": 0, "tgt": 1.0, "stop": 0.25, "entry": (9, 45), "timeStop": None, "minTgt": 0.15, "skipNear": None}
+BASE = {"dte": 0, "tgt": 1.0, "stop": 0.25, "entry": (9, 45), "timeStop": None, "minTgt": 0.15, "skipNear": None,
+        "anchor": "entry", "skipPast": False}
+# anchor "entry": target and stop are measured from the actual fill, so an entry that gaps or runs past
+# the trigger cannot land beyond its own target. "trigger" was the original rule.
 # Each variant changes one rule from BASE. Times are ET bar-close times (CT + 1 hour).
 VARIANTS = [
-    ("base", "Current rules (0DTE, next-level target, stop ¼ move, enter from 8:45 CT, hold to close)", {}),
+    ("base", "Current rules (0DTE, next-level target and ¼-move stop measured from the entry, enter from 8:45 CT, hold to close)", {}),
+    ("trig", "Old rule: target and stop measured from the trigger", {"anchor": "trigger"}),
+    ("skippast", "Old rule, but skip entries already past the target", {"anchor": "trigger", "skipPast": True}),
     ("dte1", "Next-day expiry instead of same day", {"dte": 1}),
     ("dte2", "2-day expiry instead of same day", {"dte": 2}),
     ("half", "Target halfway to the next level", {"tgt": 0.5}),
@@ -134,9 +139,11 @@ def simulate(sym, lv, bars, rules):
         score = sum([rr >= 2, (C >= lv["sma20"]) if call else (C < lv["sma20"]), abs(trig - C) <= em, 0.35 <= abs(dlt) <= 0.65])
         # this variant's rules
         far = max(0.5, rules["minTgt"])
-        level_tgt = next((u for u in ups if u > trig + em * rules["minTgt"]), trig + em * far) if call else next((u for u in dns if u < trig - em * rules["minTgt"]), trig - em * far)
-        tgt = trig + (level_tgt - trig) * rules["tgt"]
-        stp = trig - em * rules["stop"] if call else trig + em * rules["stop"]
+
+        def exits(ref):
+            level_tgt = next((u for u in ups if u > ref + em * rules["minTgt"]), ref + em * far) if call else next((u for u in dns if u < ref - em * rules["minTgt"]), ref - em * far)
+            return ref + (level_tgt - ref) * rules["tgt"], (ref - em * rules["stop"] if call else ref + em * rules["stop"])
+        tgt, stp = exits(trig)
         row = {"sym": sym, "setup": tag, "type": typ, "grade": "DDCBA"[score], "strike": K,
                "trigger": round(trig, 2), "target": round(tgt, 2), "stop": round(stp, 2), "result": "untriggered"}
         if rules["skipNear"] and abs(full_tgt - trig) < em * rules["skipNear"]:
@@ -156,6 +163,11 @@ def simulate(sym, lv, bars, rules):
                 entry = (i, end, c); break
         if entry:
             i0, t0, px0 = entry
+            if rules["skipPast"] and ((px0 >= tgt) if call else (px0 <= tgt)):
+                row["result"] = "skipped"; rows.append(row); continue
+            if rules["anchor"] == "entry":
+                tgt, stp = exits(px0)
+                row.update(target=round(tgt, 2), stop=round(stp, 2))
             out = None
             for t, o, h, l, c in bars[i0 + 1:]:
                 end = t + timedelta(minutes=5)

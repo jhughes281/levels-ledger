@@ -187,6 +187,8 @@ h1 .amp{color:var(--accent);font-weight:600}
 .st-past .st-dot{background:var(--pdh)}
 .st-past{color:var(--pdh)}
 .st-done{color:var(--muted)}
+.st-skip{color:var(--down)}
+.st-skip .st-dot{background:var(--down)}
 .st-done .st-dot{background:var(--line)}
 .nowline{display:flex;flex-wrap:wrap;justify-content:space-between;gap:4px 12px;padding:8px 10px;border-radius:4px;background:var(--sunk)}
 .nowline b{font-weight:500}
@@ -276,7 +278,7 @@ td:first-child{font-family:var(--display);font-weight:700;font-size:var(--s3);le
         <div class="seg" id="replay-filter"><button data-f="all" aria-pressed="true">All</button><button data-f="C" aria-pressed="false">Calls</button><button data-f="P" aria-pressed="false">Puts</button></div></div>
       <div id="replay-sum"></div>
       <div class="tablewrap"><table id="replay-table"><thead><tr><th>Setup</th><th>Grade</th><th>Result</th><th>Entry CT</th><th>Exit CT</th><th>Option est.</th><th>P&amp;L / contract</th></tr></thead><tbody><tr><td colspan="7" style="text-align:left;font-family:var(--body)" class="muted">The replay appears after the next data refresh.</td></tr></tbody></table></div>
-      <p class="note" style="margin:12px 0 0">Each setup is replayed on that session's 5-minute bars with the page's own rules: same-day expiry, entry on the first 5-minute close that meets the trigger at or after 8:45 CT, then the target or the stop, whichever came first (the stop if both hit in one bar), otherwise held to the 3:00 close. Option prices are model estimates, not real fills, and one session says little about how a grade holds up.</p>
+      <p class="note" style="margin:12px 0 0">Each setup is replayed on that session's 5-minute bars with the page's own rules: same-day expiry, entry on the first 5-minute close that meets the trigger at or after 8:45 CT, then the target or the stop (both measured from the entry price, so a gap past the trigger can't leave the target behind the entry), whichever came first (the stop if both hit in one bar), otherwise held to the 3:00 close. Option prices are model estimates, not real fills, and one session says little about how a grade holds up.</p>
     </div>
 
     <div class="panel" id="bt">
@@ -564,8 +566,13 @@ function renderTickets(){
     // where the price is now relative to this setup's trigger
     const d = ref - s.trig, past = call ? d>=0 : d<=0, gap = f2(Math.abs(d));
     const pivot = s.tag.startsWith("Pivot");
+    // Backtest: entries already past the target never won (57 of 272 trades, all losses). Re-measure from the current price instead.
+    const pastTgt = call ? ref>=tgt : ref<=tgt;
+    const reT = call ? nextUp(ref) : nextDn(ref), reS = call ? ref - a.em*0.25 : ref + a.em*0.25;
+    const fromHere = `from here: target ${f2(reT)}, stop ${f2(reS)}`;
     const status = closed ? {k:"done", txt:`Session over · last ${pxLabel}`}
-      : past ? {k:"past", txt: pivot ? `Price is ${gap} ${call?"above":"below"} the pivot · watch for the retest` : `Past trigger · price ${gap} ${call?"above":"below"} ${f2(s.trig)}`}
+      : past && !pivot && pastTgt ? {k:"skip", txt:`Skip · price is already past the ${f2(tgt)} target. If you still want it, measure ${fromHere}`}
+      : past ? {k:"past", txt: pivot ? `Price is ${gap} ${call?"above":"below"} the pivot · watch for the retest` : `Past trigger · price ${gap} ${call?"above":"below"} ${f2(s.trig)} · measure ${fromHere}`}
       : {k:"wait", txt: pivot ? `Waiting · price ${gap} ${call?"below":"above"} the pivot, needs to ${call?"reclaim":"lose"} it first` : `Waiting · price ${gap} ${call?"below":"above"} trigger`};
     const nowOpt = bs(ref,K,Tnow,a.vol,s.type);
     return {s,call,K,K2,tgt,stp,e,atT,atS,spr,gain,loss,rr,gw,checks,score,grade:"DDCBA"[score],status,nowOpt};
