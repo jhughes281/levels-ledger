@@ -13,6 +13,16 @@ Live artifact: https://claude.ai/artifact/WZV5Am29mEcoJXXMBDnUBb
 
 Market data comes from `fetch_market.py`, which pulls 90 daily candles from Yahoo Finance's chart API and writes `market.json`. That file is loaded into the artifact's database as `market/today`; the page computes every level from those candles. The script also replays the last finished session's setups on Yahoo's 5-minute bars (entry, target/stop/close exit, estimated option P&L; target and stop are measured from the entry price, so an entry that gaps or runs past its trigger is not left beyond its own target) and stores the results as `replay`, which the page shows under "How the last session's setups played out". It runs the same simulation over every session Yahoo keeps 5-minute bars for (about 60) as `backtest`: overall stats, breakdowns by grade/setup/side/ticker, a running P&L line and one-rule-at-a-time variants compared on the earlier two-thirds vs. the later third of sessions. A weekday scheduled task in the Claude desktop app runs this before the open.
 
+Every simulated trade pays estimated costs (half the bid/ask spread on entry and exit plus a $0.65 commission per side), so backtest results aren't flattered. The backtest also stores each session's full replay (`backtest.history`, packed as arrays) so the page can show any day, and each setup's record per ticker (`backtest.bySetupTicker`), which the setup cards show next to the grade.
+
+The script stamps `scriptVersion` into the data. When it is older than the version `index.html` expects, the page shows a warning that the replay and backtest came from an outdated copy, so the scheduled task should always download the latest `fetch_market.py` from this repo before it runs:
+
+```bash
+curl -sSL https://raw.githubusercontent.com/jhughes281/levels-ledger/main/fetch_market.py -o fetch_market.py
+```
+
+When you change the simulation rules, bump `SCRIPT_VERSION` in `fetch_market.py` and `SCRIPT_VERSION` in `index.html` together.
+
 ```bash
 python fetch_market.py market.json
 ```

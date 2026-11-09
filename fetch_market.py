@@ -14,6 +14,8 @@ from zoneinfo import ZoneInfo
 
 TICKERS = ["QQQ", "SPY", "GLD"]
 KEEP = 90
+# Bump when the simulation rules change. The page warns when the data was written by an older copy.
+SCRIPT_VERSION = "2026-11-09"
 ET = ZoneInfo("America/New_York")
 R = 0.04
 
@@ -80,13 +82,19 @@ def _bs(S, K, T, v, typ):
     return K * math.exp(-R * T) * _N(-d2) - S * _N(-d1), _N(d1) - 1
 
 
+# Trading costs per contract, applied to every simulated trade: half the bid/ask spread on the way in
+# and on the way out (wider for GLD, whose options trade thinner), plus a commission on each side.
+HALF_SPREAD = {"QQQ": 0.03, "SPY": 0.02, "GLD": 0.05}  # $ per share
+FEE = 0.65  # $ per contract per side
+
+
 def _T(t_end, dte):
     """Years left to expiry from t_end (ET), counting trading time only."""
     return (max(0.0, 16 * 60 - (t_end.hour * 60 + t_end.minute)) / 60 / 6.5 + dte) / 252
 
 
 BASE = {"dte": 0, "tgt": 1.0, "stop": 0.25, "entry": (9, 45), "timeStop": None, "minTgt": 0.15, "skipNear": None,
-        "anchor": "entry", "skipPast": False}
+        "anchor": "entry", "skipPast": False, "trend": False}
 # anchor "entry": target and stop are measured from the actual fill, so an entry that gaps or runs past
 # the trigger cannot land beyond its own target. "trigger" was the original rule.
 # Each variant changes one rule from BASE. Times are ET bar-close times (CT + 1 hour).
@@ -94,6 +102,8 @@ VARIANTS = [
     ("base", "Current rules (0DTE, next-level target and ¼-move stop measured from the entry, enter from 8:45 CT, hold to close)", {}),
     ("trig", "Old rule: target and stop measured from the trigger", {"anchor": "trigger"}),
     ("skippast", "Old rule, but skip entries already past the target", {"anchor": "trigger", "skipPast": True}),
+    ("trend", "Only trade with the 20-day trend (calls above the 20-day average, puts below)", {"trend": True}),
+    ("trend1", "With the trend and next-day expiry", {"trend": True, "dte": 1}),
     ("dte1", "Next-day expiry instead of same day", {"dte": 1}),
     ("dte2", "2-day expiry instead of same day", {"dte": 2}),
     ("half", "Target halfway to the next level", {"tgt": 0.5}),
@@ -146,6 +156,8 @@ def simulate(sym, lv, bars, rules):
         tgt, stp = exits(trig)
         row = {"sym": sym, "setup": tag, "type": typ, "grade": "DDCBA"[score], "strike": K,
                "trigger": round(trig, 2), "target": round(tgt, 2), "stop": round(stp, 2), "result": "untriggered"}
+        if rules["trend"] and ((C < lv["sma20"]) if call else (C >= lv["sma20"])):
+            row["result"] = "skipped"; rows.append(row); continue
         if rules["skipNear"] and abs(full_tgt - trig) < em * rules["skipNear"]:
             row["result"] = "skipped"; rows.append(row); continue
         entry = None
@@ -181,7 +193,8 @@ def simulate(sym, lv, bars, rules):
                 out = ("close", bars[-1][0] + timedelta(minutes=5), bars[-1][4])
             why, t1, px1 = out
             o0, o1 = _bs(px0, K, _T(t0, rules["dte"]), vol, typ)[0], _bs(px1, K, _T(t1, rules["dte"]), vol, typ)[0]
-            pl = (o1 - o0) * 100
+            hs = HALF_SPREAD.get(sym, 0.03)
+            pl = (max(0.0, o1 - hs) - (o0 + hs)) * 100 - 2 * FEE
             ct = lambda t: (t - timedelta(hours=1)).strftime("%H:%M")  # ET to CT
             row.update(result="win" if pl > 0 else "loss", exit=why, entryCT=ct(t0), entryPx=round(px0, 2),
                        exitCT=ct(t1), exitPx=round(px1, 2), optIn=round(o0, 2), optOut=round(o1, 2), pl=round(pl))
@@ -195,6 +208,19 @@ def stats(rows):
     return {"setups": len(rows), "trades": len(t), "wins": len(w), "winRate": round(len(w) / len(t), 3) if t else None,
             "avgWin": round(sum(w) / len(w)) if w else None, "avgLoss": round(sum(lo) / len(lo)) if lo else None,
             "avg": round((sum(w) + sum(lo)) / len(t)) if t else None, "total": round(sum(w) + sum(lo))}
+
+
+SETUP_NAMES = [tag for tag, _, _ in SETUPS]
+HIST_FIELDS = ["sym", "setup", "type", "grade", "strike", "trigger", "target", "stop", "result",
+               "exit", "entryCT", "entryPx", "exitCT", "exitPx", "optIn", "optOut", "pl"]
+
+
+def history(rows, sessions):
+    """Every session's replay under the current rules, packed as arrays (field order in HIST_FIELDS) to keep the doc small."""
+    by = defaultdict(list)
+    for r in rows:
+        by[r["date"]].append([SETUP_NAMES.index(r[k]) if k == "setup" else r.get(k) for k in HIST_FIELDS])
+    return {"fields": HIST_FIELDS, "setups": SETUP_NAMES, "days": {d: by[d] for d in sessions}}
 
 
 def backtest(daily, bars5):
@@ -226,6 +252,9 @@ def backtest(daily, bars5):
     groups = {"grade": "grade", "setup": "setup", "side": "type", "ticker": "sym"}
     out["by"] = {name: {v: stats([r for r in base_rows if r[field] == v]) for v in sorted({r[field] for r in base_rows})} for name, field in groups.items()}
     out["base"] = stats(base_rows)
+    out["bySetupTicker"] = {s: {tag: stats([r for r in base_rows if r["sym"] == s and r["setup"] == tag]) for tag, _, _ in SETUPS} for s in TICKERS}
+    out["costs"] = {"halfSpread": HALF_SPREAD, "fee": FEE}
+    out["history"] = history(base_rows, sessions)
     out["daily"] = [[d, sum(r.get("pl", 0) for r in base_rows if r["date"] == d)] for d in sessions]
     return out
 
@@ -244,6 +273,7 @@ def main():
         "updatedAt": datetime.now(timezone.utc).isoformat(),
         "updatedAtET": now.strftime("%a %b %d, %I:%M %p ET"),
         "source": "Yahoo Finance daily and 5-minute charts",
+        "scriptVersion": SCRIPT_VERSION,
         "tickers": {s: {**t, "candles": t["candles"][-KEEP:]} for s, t in tickers.items()},
     }
     # Replay and backtest cover finished sessions only; today counts once the close is in.

@@ -189,6 +189,9 @@ h1 .amp{color:var(--accent);font-weight:600}
 .st-done{color:var(--muted)}
 .st-skip{color:var(--down)}
 .st-skip .st-dot{background:var(--down)}
+.record{font-size:var(--s1);color:var(--muted);display:flex;flex-wrap:wrap;gap:4px 10px;align-items:baseline}
+.record b{font-family:var(--mono);font-weight:500;color:var(--ink)}
+#script-note{border-left:3px solid var(--down)}
 .st-done .st-dot{background:var(--line)}
 .nowline{display:flex;flex-wrap:wrap;justify-content:space-between;gap:4px 12px;padding:8px 10px;border-radius:4px;background:var(--sunk)}
 .nowline b{font-weight:500}
@@ -226,6 +229,7 @@ td:first-child{font-family:var(--display);font-weight:700;font-size:var(--s3);le
     </div>
     <div class="meta" id="status"></div>
   </header>
+  <p class="warn" id="script-note" style="margin:12px 0 0" hidden></p>
 
   <nav class="tabs" role="tablist">
     <button role="tab" id="tab-levels" aria-selected="true" aria-controls="view-levels">Levels</button>
@@ -275,7 +279,7 @@ td:first-child{font-family:var(--display);font-weight:700;font-size:var(--s3);le
 
     <div class="panel" id="replay">
       <div class="panel-head"><h2 id="replay-title">How the last session's setups played out</h2>
-        <div class="seg" id="replay-filter"><button data-f="all" aria-pressed="true">All</button><button data-f="C" aria-pressed="false">Calls</button><button data-f="P" aria-pressed="false">Puts</button></div></div>
+        <div class="controls" style="margin:0"><select id="replay-day" aria-label="Session" style="width:auto" hidden></select><div class="seg" id="replay-filter"><button data-f="all" aria-pressed="true">All</button><button data-f="C" aria-pressed="false">Calls</button><button data-f="P" aria-pressed="false">Puts</button></div></div></div>
       <div id="replay-sum"></div>
       <div class="tablewrap"><table id="replay-table"><thead><tr><th>Setup</th><th>Grade</th><th>Result</th><th>Entry CT</th><th>Exit CT</th><th>Option est.</th><th>P&amp;L / contract</th></tr></thead><tbody><tr><td colspan="7" style="text-align:left;font-family:var(--body)" class="muted">The replay appears after the next data refresh.</td></tr></tbody></table></div>
       <p class="note" style="margin:12px 0 0">Each setup is replayed on that session's 5-minute bars with the page's own rules: same-day expiry, entry on the first 5-minute close that meets the trigger at or after 8:45 CT, then the target or the stop (both measured from the entry price, so a gap past the trigger can't leave the target behind the entry), whichever came first (the stop if both hit in one bar), otherwise held to the 3:00 close. Option prices are model estimates, not real fills, and one session says little about how a grade holds up.</p>
@@ -380,6 +384,7 @@ td:first-child{font-family:var(--display);font-weight:700;font-size:var(--s3);le
 "use strict";
 const $ = s => document.querySelector(s);
 const TICKERS = ["QQQ","SPY","GLD"];
+const SCRIPT_VERSION = "2026-11-09"; // the fetch_market.py version this page expects
 const state = { market:null, sel:"QQQ", volOverride:{}, ledger:{deposits:[],trades:[]}, ledgerRef:null, depType:"deposit", optType:"C", editId:null, pnlDays:28 };
 
 /* ---------- formatting ---------- */
@@ -520,6 +525,16 @@ function renderChart(){
   $("#chart").innerHTML = `<svg viewBox="0 0 ${W} ${H}" role="img" aria-label="${a.sym} daily candles with pivot levels">${g}</svg>`;
 }
 
+/* How this setup has actually done in the backtest: the grade's rules don't predict winners well, so show the record next to it. */
+function trackRecord(sym,tag){
+  const bt = state.market && state.market.backtest; if (!bt) return "";
+  const own = bt.bySetupTicker && bt.bySetupTicker[sym] && bt.bySetupTicker[sym][tag];
+  const st = own || (bt.by && bt.by.setup && bt.by.setup[tag]); if (!st) return "";
+  const who = own ? `${sym} ${tag}` : `${tag}, all tickers`;
+  if (!st.trades) return `<div class="record">Backtest · ${esc(who)}: never triggered in ${bt.sessions} sessions</div>`;
+  return `<div class="record"><span>Backtest · ${esc(who)}, ${bt.sessions} sessions:</span><span><b>${st.trades}</b> trades</span><span><b>${Math.round(st.winRate*100)}%</b> won</span><span>avg <b class="${cls(st.avg)}">${smoney(st.avg)}</b></span><span>total <b class="${cls(st.total)}">${smoney(st.total)}</b></span>${st.trades<10?'<span>· too few trades to judge</span>':""}</div>`;
+}
+
 function strikeFor(level,type){ return type==="C" ? Math.ceil(level) : Math.floor(level); }
 function renderTickets(){
   const a = analyse(state.sel);
@@ -575,9 +590,9 @@ function renderTickets(){
       : past ? {k:"past", txt: pivot ? `Price is ${gap} ${call?"above":"below"} the pivot · watch for the retest` : `Past trigger · price ${gap} ${call?"above":"below"} ${f2(s.trig)} · measure ${fromHere}`}
       : {k:"wait", txt: pivot ? `Waiting · price ${gap} ${call?"below":"above"} the pivot, needs to ${call?"reclaim":"lose"} it first` : `Waiting · price ${gap} ${call?"below":"above"} trigger`};
     const nowOpt = bs(ref,K,Tnow,a.vol,s.type);
-    return {s,call,K,K2,tgt,stp,e,atT,atS,spr,gain,loss,rr,gw,checks,score,grade:"DDCBA"[score],status,nowOpt};
+    return {s,call,K,K2,tgt,stp,e,atT,atS,spr,gain,loss,rr,gw,checks,score,grade:"DDCBA"[score],status,nowOpt,rec:trackRecord(a.sym,s.tag)};
   }).sort((p,q)=>q.score-p.score || q.rr-p.rr);
-  $("#tickets").innerHTML = `<p class="small muted" style="margin:0">Last price ${pxLabel}${live?"":onSession&&!closed?" · before the open":""}</p>` + built.map(({s,call,K,K2,tgt,stp,e,atT,atS,spr,gain,loss,rr,gw,checks,score,grade,status,nowOpt}) => {
+  $("#tickets").innerHTML = `<p class="small muted" style="margin:0">Last price ${pxLabel}${live?"":onSession&&!closed?" · before the open":""}</p>` + built.map(({s,call,K,K2,tgt,stp,e,atT,atS,spr,gain,loss,rr,gw,checks,score,grade,status,nowOpt,rec}) => {
     return `<article class="ticket ${call?"is-call":"is-put"}">
       <div style="display:flex;flex-wrap:wrap;justify-content:space-between;align-items:center;gap:8px"><span style="display:flex;flex-wrap:wrap;gap:6px;align-items:center"><span class="grade g-${grade}" title="Meets ${score} of 4 rules">Grade ${grade}</span><span class="tag">${call?"▲":"▼"} ${s.tag}</span></span><span class="small muted num">exp ${mmdd(exp)}${dte===0?" · 0DTE":""}</span></div>
       <div class="contract"><span>${a.sym}</span> ${mmdd(exp)} <b>${K}${s.type}</b></div>
@@ -597,6 +612,7 @@ function renderTickets(){
       </div>
       <div class="rr"><div class="rr-bar"><span class="rr-loss" style="width:${100-gw}%"></span><span class="rr-gain" style="width:${gw}%"></span></div>
         <span class="small num muted">reward : risk <b>${rr.toFixed(1)} : 1</b></span></div>
+      ${rec}
       <ul class="checks">${checks.map(c=>`<li class="${c.ok?"ok":"no"}"><span aria-hidden="true">${c.ok?"✓":"✕"}</span>${c.txt}</li>`).join("")}</ul>
       <div class="spread">Defined-risk version: buy ${K}${s.type} / sell ${K2}${s.type} spread · about $${Math.round(spr*100)} to make up to $500</div>
     </article>`;
@@ -614,14 +630,33 @@ function renderLevels(){
   const a = analyse(state.sel);
   const age = (Date.now() - Date.parse(state.market.updatedAt))/36e5;
   $("#sub").innerHTML = `${new Date(parseD(a.session)).toLocaleDateString("en-US",{weekday:"long",month:"short",day:"numeric"})} · levels from the ${shortD(a.from)} close · data updated ${esc(state.market.updatedAtET)}${age>20?' <b class="down">(over 20 hours old)</b>':""}`;
+  const sv = state.market.scriptVersion || "";
+  const note = $("#script-note");
+  if (sv < SCRIPT_VERSION) { note.hidden = false; note.innerHTML = `<b>The data was written by an outdated copy of fetch_market.py</b> (${sv?`version ${esc(sv)}`:"no version stamp"}; this page expects ${SCRIPT_VERSION}). The levels are fine, but the replay and backtest below use old rules. Update the scheduled task to download the latest script from GitHub before it runs.`; }
+  else note.hidden = true;
   renderTickers(); renderChart(); renderTickets(); renderLevelTable(); renderReplay(); renderBacktest();
 }
 
+function historyRows(day){
+  const h = state.market.backtest && state.market.backtest.history; if (!h || !h.days[day]) return null;
+  return h.days[day].map(a => { const r = {}; h.fields.forEach((k,i)=>{ if (a[i]!=null) r[k] = k==="setup" ? h.setups[a[i]] : a[i]; }); return r; });
+}
 function renderReplay(){
   const rp = state.market && state.market.replay; if (!rp) return;
+  const h = state.market.backtest && state.market.backtest.history;
+  const sel = $("#replay-day");
+  if (h) {
+    const days = Object.keys(h.days).sort().reverse();
+    if (!state.replayDay || !h.days[state.replayDay]) state.replayDay = h.days[rp.session] ? rp.session : days[0];
+    sel.innerHTML = days.map(d=>{ const pl=h.days[d].reduce((s,a)=>s+(a[h.fields.indexOf("pl")]||0),0);
+      return `<option value="${d}" ${d===state.replayDay?"selected":""}>${new Date(parseD(d)).toLocaleDateString("en-US",{weekday:"short",month:"short",day:"numeric"})} · ${smoney(pl)}</option>`; }).join("");
+    sel.hidden = false; sel.onchange = () => { state.replayDay = sel.value; renderReplay(); };
+  }
+  const day = h ? state.replayDay : rp.session;
+  const all = (h && historyRows(day)) || rp.rows;
   const f = state.replayFilter || "all";
-  const rows = rp.rows.filter(r => f==="all" || r.type===f);
-  $("#replay-title").textContent = `How ${new Date(parseD(rp.session)).toLocaleDateString("en-US",{weekday:"long",month:"short",day:"numeric"})}'s setups played out`;
+  const rows = all.filter(r => (f==="all" || r.type===f) && r.result!=="skipped");
+  $("#replay-title").textContent = `How ${new Date(parseD(day)).toLocaleDateString("en-US",{weekday:"long",month:"short",day:"numeric"})}'s setups played out`;
   const trig = rows.filter(r=>r.result!=="untriggered"), w = trig.filter(r=>r.result==="win").length, pl = trig.reduce((s,r)=>s+r.pl,0);
   const byGrade = ["A","B","C","D"].map(g=>{ const t=trig.filter(r=>r.grade===g); return t.length ? `<span class="chip"><span class="grade g-${g}" style="font-size:11px;padding:0 6px">${g}</span>${t.filter(r=>r.result==="win").length}–${t.filter(r=>r.result==="loss").length}</span>` : ""; }).join("");
   $("#replay-sum").innerHTML = `<div class="replay-sum">
@@ -693,7 +728,7 @@ function renderBacktest(){
       <tr><th rowspan="2">Rule</th><th colspan="3" class="grp">Earlier: ${shortD(bt.from)} – before ${shortD(bt.splitAt)}</th><th colspan="3" class="grp">Later: ${shortD(bt.splitAt)} – ${shortD(bt.to)}</th></tr>
       <tr><th>Trades</th><th>Win</th><th>Avg</th><th>Trades</th><th>Win</th><th>Avg</th></tr></thead>
       <tbody>${variants.map(v=>`<tr class="${v.key==="base"?"is-base":""}"><td>${esc(v.label)}${v.key===best.key?' <span class="pill">best earlier</span>':""}</td>${cmp(v,"earlier")}${cmp(v,"later")}</tr>`).join("")}</tbody></table></div>
-    <p class="note" style="margin:12px 0 0">Pick a rule change from the earlier sessions, then check it on the later ones it wasn't picked from. A change that only wins in the earlier columns is probably luck, and so is any result built on a handful of trades. All option prices are Black-Scholes estimates at the same volatility with no bid/ask spread or fees, so real results would be worse than shown. Past results don't predict future ones.</p>`;
+    <p class="note" style="margin:12px 0 0">Pick a rule change from the earlier sessions, then check it on the later ones it wasn't picked from. A change that only wins in the earlier columns is probably luck, and so is any result built on a handful of trades. All option prices are Black-Scholes estimates at the same volatility. ${bt.costs?`Each trade pays estimated costs: half the bid/ask spread on entry and exit (${Object.entries(bt.costs.halfSpread).map(([k,v])=>`${k} $${v.toFixed(2)}`).join(", ")} per share) and $${bt.costs.fee.toFixed(2)} per contract each side. Real spreads widen in fast markets, so fills can still be worse.`:"No bid/ask spread or fees are included, so real results would be worse than shown."} Past results don't predict future ones.</p>`;
   document.querySelectorAll("#bt-by button").forEach(btn=>btn.onclick=()=>{ state.btBy=btn.dataset.by; renderBacktest(); });
   document.querySelectorAll("#bt-scope button").forEach(btn=>btn.onclick=()=>{ state.btScope=btn.dataset.scope; renderBacktest(); });
 }
