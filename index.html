@@ -200,6 +200,14 @@ h1 .amp{color:var(--accent);font-weight:600}
 .grade.g-B{color:var(--ink)}
 .grade.g-C{color:var(--muted)}
 .grade.g-D{color:var(--muted);border-style:dashed}
+.grade.g-Aplus{background:var(--up);color:var(--accent-ink);border-color:var(--up)}
+.checks .wait{color:var(--muted)}
+.checks .wait span{color:var(--pdh)}
+.confirm{display:grid;gap:6px;padding-top:10px;border-top:1px dashed var(--line)}
+.confirm h4{margin:0;font:600 var(--s2)/1.3 var(--body)}
+.confirm .ev{font-size:11px;color:var(--muted)}
+.checks .manual > span{color:var(--sup)}
+.confirm li > div{min-width:0}
 .checks{list-style:none;margin:0;padding:0;display:grid;gap:3px;font-size:var(--s1)}
 .checks li{display:flex;gap:7px;align-items:baseline}
 .checks li span{width:12px;flex:none;font-weight:700}
@@ -267,7 +275,7 @@ td:first-child{font-family:var(--display);font-weight:700;font-size:var(--s3);le
           <div class="field" style="max-width:110px"><label for="entry-time">Trigger after</label><input id="entry-time" type="time" value="08:45"></div>
         </div>
         <div class="tickets" id="tickets"><div class="empty">Setups appear once market data loads.</div></div>
-        <p class="note" style="margin:12px 0 0">These are mechanical if-then setups built from the levels, not recommendations. Grades count how many of four fixed rules a setup meets (4 = A, 3 = B, 2 = C, 1 or 0 = D), and setups are sorted by grade. They are for reference only. Premiums are Black-Scholes estimates from the vol above; real quotes, spreads and fills will differ. Check the live chain before you trade.</p>
+        <p class="note" style="margin:12px 0 0">These are mechanical if-then setups built from the levels, not recommendations. Grades count how many of five checks a setup meets (5 = A+, 4 = A, 3 = B, 2 = C, 1 or 0 = D): with the 5-day trend, calm market (20-day vol at or below 25%), a breakout or breakdown rather than a pivot setup, an open that gaps the trade's way, and an entry that pushes at least ¼ of the expected move past the trigger. Each check improved results in both halves of the backtest, but a high grade still loses often; it only tilts the odds. Premiums are Black-Scholes estimates from the vol above; real quotes, spreads and fills will differ. Check the live chain before you trade.</p>
       </div>
     </div>
 
@@ -384,7 +392,9 @@ td:first-child{font-family:var(--display);font-weight:700;font-size:var(--s3);le
 "use strict";
 const $ = s => document.querySelector(s);
 const TICKERS = ["QQQ","SPY","GLD"];
-const SCRIPT_VERSION = "2026-11-09"; // the fetch_market.py version this page expects
+const SCRIPT_VERSION = "2026-11-18";
+const GRADES = ["D","D","C","B","A","A+"];
+const gcls = g => "g-" + String(g).replace("+","plus"); // the fetch_market.py version this page expects
 const state = { market:null, sel:"QQQ", volOverride:{}, ledger:{deposits:[],trades:[]}, ledgerRef:null, depType:"deposit", optType:"C", editId:null, pnlDays:28 };
 
 /* ---------- formatting ---------- */
@@ -431,6 +441,55 @@ function bs(S,K,T,v,type,r=0.04){
 function realizedVol(c){ const cl=c.map(x=>x[4]); const r=[]; for(let i=cl.length-20;i<cl.length;i++) if(i>0) r.push(Math.log(cl[i]/cl[i-1]));
   const m=r.reduce((a,b)=>a+b,0)/r.length; const v=r.reduce((a,b)=>a+(b-m)**2,0)/(r.length-1); return Math.sqrt(v*252); }
 
+/* Wilder's ADX(14) on daily candles, same as fetch_market.py */
+function adx14(c, n=14){
+  if (c.length < 2*n+2) return null;
+  const tr=[], pdm=[], mdm=[];
+  for (let i=1;i<c.length;i++){ const [,,h,l,cl]=c[i], [,,h0,l0,c0]=c[i-1], up=h-h0, dn=l0-l;
+    tr.push(Math.max(h-l,Math.abs(h-c0),Math.abs(l-c0))); pdm.push(up>dn&&up>0?up:0); mdm.push(dn>up&&dn>0?dn:0); }
+  let atr=tr.slice(0,n).reduce((a,b)=>a+b,0), ap=pdm.slice(0,n).reduce((a,b)=>a+b,0), am=mdm.slice(0,n).reduce((a,b)=>a+b,0); const dx=[];
+  for (let i=n;i<=tr.length;i++){ if(i>n){ atr=atr-atr/n+tr[i-1]; ap=ap-ap/n+pdm[i-1]; am=am-am/n+mdm[i-1]; }
+    const pdi=atr?100*ap/atr:0, mdi=atr?100*am/atr:0; dx.push(pdi+mdi?100*Math.abs(pdi-mdi)/(pdi+mdi):0); }
+  let a=dx.slice(0,n).reduce((x,y)=>x+y,0)/n; for (const x of dx.slice(n)) a=(a*(n-1)+x)/n; return a;
+}
+
+/* Confirm before entry: volume, VWAP, RSI, 20/50 EMA on the 5-minute chart, plus daily ADX. ADX is computed here;
+   the rest need intraday data, so they're a checklist for the chart at the trigger, with the backtest's verdict on each. */
+function confirmBlock(a, call){
+  const C = state.market.backtest && state.market.backtest.confirmations;
+  const ev = name => { if (!C || !C.each[name]) return "";
+    const w=C.each[name].with, o=C.each[name].without;
+    if (!w.all.trades || !o.all.trades) return "";
+    const better = w.all.avg > o.all.avg && (w.later.avg??-1e9) > (o.later.avg??-1e9);
+    return `<div class="ev">Backtest avg ${smoney(w.all.avg)} when it agreed vs ${smoney(o.all.avg)} when not (later: ${smoney(w.later.avg??0)} vs ${smoney(o.later.avg??0)}) · <b>${better?"helps":"hasn't helped yet"}</b></div>`; };
+  const up = call;
+  const items = [
+    {k:"volume", ok:null, txt:`Volume: the trigger candle is at least 1.5× normal volume for that time of day`},
+    {k:"vwap", ok:null, txt:`VWAP: price ${up?"above":"below"} the session VWAP`},
+    {k:"rsi", ok:null, txt:`RSI: 5-min RSI(14) ${up?"above":"below"} 50`},
+    {k:"ema", ok:null, txt:`EMA: 5-min 20 EMA ${up?"above":"below"} the 50 EMA, and price ${up?"above":"below"} the 20 EMA`},
+    {k:"adx", ok: a.adx==null?null:a.adx>=25, txt: a.adx==null ? "ADX: not enough history" : `ADX: daily ADX(14) is ${a.adx.toFixed(1)} (25+ = trending, under 20 = weak)`},
+  ];
+  return `<div class="confirm"><h4>Confirm before entry <span class="small muted" style="font-weight:400">· check on the 5-min chart at the trigger</span></h4>
+    <ul class="checks">${items.map(i=>`<li class="${i.ok===null?"manual":i.ok?"ok":"no"}"><span aria-hidden="true">${i.ok===null?"☐":i.ok?"✓":"✕"}</span><div>${i.txt}${ev(i.k)}</div></li>`).join("")}</ul></div>`;
+}
+
+function confirmTable(bt){
+  const C = bt.confirmations; if (!C) return "";
+  const m = v => v==null ? "—" : smoney(v), p = v => v==null ? "—" : Math.round(v*100)+"%";
+  const label = {volume:"Volume ≥ 1.5× normal", vwap:"Price on the trade's side of VWAP", rsi:"5-min RSI on the trade's side of 50", ema:"20 EMA beyond 50 EMA, price beyond 20 EMA", adx:"Daily ADX ≥ 25"};
+  const rows = C.names.map(n=>{ const w=C.each[n].with, o=C.each[n].without;
+    return `<tr><td>${label[n]||n}</td><td>${w.all.trades}</td><td>${p(w.all.winRate)}</td><td class="${cls(w.earlier.avg)}">${m(w.earlier.avg)}</td><td class="${cls(w.later.avg)}">${m(w.later.avg)}</td>
+      <td>${o.all.trades}</td><td class="${cls(o.earlier.avg)}">${m(o.earlier.avg)}</td><td class="${cls(o.later.avg)}">${m(o.later.avg)}</td></tr>`; }).join("");
+  const cnt = Object.entries(C.byCount).map(([k,x])=>`<tr><td>${k} of 5 agreed</td><td>${x.all.trades}</td><td>${p(x.all.winRate)}</td><td class="${cls(x.earlier.avg)}">${m(x.earlier.avg)}</td><td class="${cls(x.later.avg)}">${m(x.later.avg)}</td><td colspan="3"></td></tr>`).join("");
+  return `<div class="panel-head" style="margin:22px 0 6px"><h3>Confirmation indicators</h3><span class="small muted">Measured at each entry, current rules</span></div>
+    <div class="tablewrap"><table class="bt-cmp"><thead>
+      <tr><th rowspan="2">Indicator</th><th colspan="4" class="grp">When it agreed with the trade</th><th colspan="3" class="grp">When it didn't</th></tr>
+      <tr><th>Trades</th><th>Win</th><th>Avg earlier</th><th>Avg later</th><th>Trades</th><th>Avg earlier</th><th>Avg later</th></tr></thead>
+      <tbody>${rows}${cnt}</tbody></table></div>
+    <p class="note" style="margin:12px 0 0">An indicator earns its place if the "agreed" column beats the "didn't" column in both the earlier and later sessions. If it doesn't, it's adding a step without improving decisions. The rule-change table above also tests requiring 3 or 4 confirmations.</p>`;
+}
+
 /* Levels come from the last complete session; a partial bar for today is shown on the chart but not used. */
 function analyse(sym){
   const t = state.market.tickers[sym]; const c = t.candles;
@@ -441,9 +500,12 @@ function analyse(sym){
   const vol = state.volOverride[sym] ? state.volOverride[sym]/100 : rv;
   const em = C*vol*Math.sqrt(1/252);
   const sma20 = base.slice(-20).reduce((a,x)=>a+x[4],0)/20;
+  const C5 = base.length>5 ? base[base.length-6][4] : C;
+  const adx = adx14(base);
+  const open = t.lastIsPartial ? c[c.length-1][1] : null; // the session's open, once the session has started
   const prev = base.length>1 ? base[base.length-2][4] : C;
   const session = t.lastIsPartial ? c[c.length-1][0] : nextWeekday(d);
-  return { sym, from:d, session, H,L,C,P,R1,S1,R2,S2, em, emHi:C+em, emLo:C-em, vol, rv, sma20, prev, last:t.last, partial:t.lastIsPartial, candles:c };
+  return { sym, from:d, session, H,L,C,P,R1,S1,R2,S2, em, emHi:C+em, emLo:C-em, vol, rv, sma20, C5, open, adx, prev, last:t.last, partial:t.lastIsPartial, candles:c };
 }
 
 /* ---------- levels view ---------- */
@@ -570,14 +632,16 @@ function renderTickets(){
     const K2 = call?K+5:K-5; const spr = e.p - bs(s.trig,K2,Tentry,a.vol,s.type).p;
     const gain = (atT/e.p-1)*100, loss=(atS/e.p-1)*100;
     const rr = loss<0 ? gain/Math.abs(loss) : 0, gw = Math.min(100, gain/(gain+Math.abs(loss))*100);
-    // Grade = how many of four fixed rules the setup meets. Reference only.
+    // Grade = how many of five checks the setup meets (same rules as fetch_market.py). ok: true, false, or null = not known yet.
+    const sg = call?1:-1, pushPx = s.trig + sg*0.25*a.em;
     const checks = [
-      {ok: rr>=2, txt:`Reward:risk ${rr.toFixed(1)} (needs 2.0+)`},
-      {ok: call ? a.C>=a.sma20 : a.C<a.sma20, txt:`${call?"Call":"Put"} with the 20-day trend (close ${a.C>=a.sma20?"above":"below"} ${f2(a.sma20)})`},
-      {ok: Math.abs(s.trig-ref)<=a.em, txt:`Trigger ${f2(Math.abs(s.trig-ref))} from last price (within ±${f2(a.em)} move)`},
-      {ok: Math.abs(e.d)>=0.35 && Math.abs(e.d)<=0.65, txt:`Delta ${Math.abs(e.d).toFixed(2)} (0.35–0.65 band)`},
+      {ok: (a.C-a.C5)*sg>0, txt:`${call?"Up":"Down"} over the last 5 sessions (${f2(a.C5)} → ${f2(a.C)})`},
+      {ok: a.rv<=0.25, txt:`Calm market: 20-day vol ${(a.rv*100).toFixed(1)}% (25% or less)`},
+      {ok: !s.tag.startsWith("Pivot"), txt: s.tag.startsWith("Pivot") ? "Pivot setup (breakouts and breakdowns have done better)" : "Breakout/breakdown setup"},
+      {ok: a.open==null ? null : (a.open-a.C)*sg>0, txt: a.open==null ? `Open gaps ${call?"up":"down"} from ${f2(a.C)} (known at the open)` : `Opened ${f2(a.open)}, ${a.open>=a.C?"up":"down"} from ${f2(a.C)}`},
+      {ok: null, txt:`Entry pushes through: first 5-min close ${call?"at or above":"at or below"} ${f2(pushPx)} (¼ move past the trigger)`},
     ];
-    const score = checks.filter(c=>c.ok).length;
+    const score = checks.filter(c=>c.ok===true).length, maxScore = score + checks.filter(c=>c.ok===null).length;
     // where the price is now relative to this setup's trigger
     const d = ref - s.trig, past = call ? d>=0 : d<=0, gap = f2(Math.abs(d));
     const pivot = s.tag.startsWith("Pivot");
@@ -590,11 +654,11 @@ function renderTickets(){
       : past ? {k:"past", txt: pivot ? `Price is ${gap} ${call?"above":"below"} the pivot · watch for the retest` : `Past trigger · price ${gap} ${call?"above":"below"} ${f2(s.trig)} · measure ${fromHere}`}
       : {k:"wait", txt: pivot ? `Waiting · price ${gap} ${call?"below":"above"} the pivot, needs to ${call?"reclaim":"lose"} it first` : `Waiting · price ${gap} ${call?"below":"above"} trigger`};
     const nowOpt = bs(ref,K,Tnow,a.vol,s.type);
-    return {s,call,K,K2,tgt,stp,e,atT,atS,spr,gain,loss,rr,gw,checks,score,grade:"DDCBA"[score],status,nowOpt,rec:trackRecord(a.sym,s.tag)};
-  }).sort((p,q)=>q.score-p.score || q.rr-p.rr);
-  $("#tickets").innerHTML = `<p class="small muted" style="margin:0">Last price ${pxLabel}${live?"":onSession&&!closed?" · before the open":""}</p>` + built.map(({s,call,K,K2,tgt,stp,e,atT,atS,spr,gain,loss,rr,gw,checks,score,grade,status,nowOpt,rec}) => {
+    return {s,call,K,K2,tgt,stp,e,atT,atS,spr,gain,loss,rr,gw,checks,score,maxScore,grade:GRADES[score],best:GRADES[maxScore],status,nowOpt,rec:trackRecord(a.sym,s.tag)};
+  }).sort((p,q)=>q.maxScore-p.maxScore || q.score-p.score || q.rr-p.rr);
+  $("#tickets").innerHTML = `<p class="small muted" style="margin:0">Last price ${pxLabel}${live?"":onSession&&!closed?" · before the open":""}</p>` + built.map(({s,call,K,K2,tgt,stp,e,atT,atS,spr,gain,loss,rr,gw,checks,score,maxScore,grade,best,status,nowOpt,rec}) => {
     return `<article class="ticket ${call?"is-call":"is-put"}">
-      <div style="display:flex;flex-wrap:wrap;justify-content:space-between;align-items:center;gap:8px"><span style="display:flex;flex-wrap:wrap;gap:6px;align-items:center"><span class="grade g-${grade}" title="Meets ${score} of 4 rules">Grade ${grade}</span><span class="tag">${call?"▲":"▼"} ${s.tag}</span></span><span class="small muted num">exp ${mmdd(exp)}${dte===0?" · 0DTE":""}</span></div>
+      <div style="display:flex;flex-wrap:wrap;justify-content:space-between;align-items:center;gap:8px"><span style="display:flex;flex-wrap:wrap;gap:6px;align-items:center"><span class="grade ${gcls(maxScore>score?best:grade)}" title="Meets ${score} of 5 checks so far${maxScore>score?`; ${maxScore-score} still to be decided`:""}">${maxScore>score?`Up to ${best}`:`Grade ${grade}`}</span>${maxScore>score?`<span class="small muted">${score}/5 confirmed</span>`:""}<span class="tag">${call?"▲":"▼"} ${s.tag}</span></span><span class="small muted num">exp ${mmdd(exp)}${dte===0?" · 0DTE":""}</span></div>
       <div class="contract"><span>${a.sym}</span> ${mmdd(exp)} <b>${K}${s.type}</b></div>
       <div class="trigger">${esc(s.text)}</div>
       <div class="status st-${status.k}"><span class="st-dot" aria-hidden="true"></span><span>${status.txt}</span></div>
@@ -613,7 +677,8 @@ function renderTickets(){
       <div class="rr"><div class="rr-bar"><span class="rr-loss" style="width:${100-gw}%"></span><span class="rr-gain" style="width:${gw}%"></span></div>
         <span class="small num muted">reward : risk <b>${rr.toFixed(1)} : 1</b></span></div>
       ${rec}
-      <ul class="checks">${checks.map(c=>`<li class="${c.ok?"ok":"no"}"><span aria-hidden="true">${c.ok?"✓":"✕"}</span>${c.txt}</li>`).join("")}</ul>
+      <ul class="checks">${checks.map(c=>`<li class="${c.ok===null?"wait":c.ok?"ok":"no"}"><span aria-hidden="true">${c.ok===null?"…":c.ok?"✓":"✕"}</span>${c.txt}</li>`).join("")}</ul>
+      ${confirmBlock(a, call)}
       <div class="spread">Defined-risk version: buy ${K}${s.type} / sell ${K2}${s.type} spread · about $${Math.round(spr*100)} to make up to $500</div>
     </article>`;
   }).join("");
@@ -658,24 +723,39 @@ function renderReplay(){
   const rows = all.filter(r => (f==="all" || r.type===f) && r.result!=="skipped");
   $("#replay-title").textContent = `How ${new Date(parseD(day)).toLocaleDateString("en-US",{weekday:"long",month:"short",day:"numeric"})}'s setups played out`;
   const trig = rows.filter(r=>r.result!=="untriggered"), w = trig.filter(r=>r.result==="win").length, pl = trig.reduce((s,r)=>s+r.pl,0);
-  const byGrade = ["A","B","C","D"].map(g=>{ const t=trig.filter(r=>r.grade===g); return t.length ? `<span class="chip"><span class="grade g-${g}" style="font-size:11px;padding:0 6px">${g}</span>${t.filter(r=>r.result==="win").length}–${t.filter(r=>r.result==="loss").length}</span>` : ""; }).join("");
+  const byGrade = ["A+","A","B","C","D"].map(g=>{ const t=trig.filter(r=>r.grade===g); return t.length ? `<span class="chip"><span class="grade ${gcls(g)}" style="font-size:11px;padding:0 6px">${g}</span>${t.filter(r=>r.result==="win").length}–${t.filter(r=>r.result==="loss").length}</span>` : ""; }).join("");
   $("#replay-sum").innerHTML = `<div class="replay-sum">
       <div><span class="label">Triggered</span><b class="num">${trig.length} of ${rows.length}</b></div>
       <div><span class="label">Won – lost</span><b class="num">${w} – ${trig.length-w}</b></div>
       <div><span class="label">Win rate</span><b class="num">${trig.length?Math.round(w/trig.length*100)+"%":"—"}</b></div>
       <div><span class="label">Est. P&amp;L, 1 contract each</span><b class="num ${cls(pl)}">${trig.length?smoney(pl):"—"}</b></div>
     </div>${byGrade?`<div class="meta" style="margin:10px 0 4px"><span class="small muted">By grade (won–lost):</span>${byGrade}</div>`:""}`;
-  const order = {A:0,B:1,C:2,D:3};
+  const order = {"A+":0,A:1,B:2,C:3,D:4};
   const sorted = [...rows].sort((p,q)=>(p.result==="untriggered")-(q.result==="untriggered") || order[p.grade]-order[q.grade]);
   const why = {target:"hit target", stop:"stopped out", close:"held to close"};
   $("#replay-table tbody").innerHTML = sorted.map(r=>{
     const t = r.result!=="untriggered";
     return `<tr class="${t?"":"untrig"}"><td><span class="${r.type==="C"?"up":"down"}">${r.sym} ${r.strike}${r.type}</span> <span class="muted" style="font-family:var(--body)">${r.setup}</span></td>
-      <td><span class="grade g-${r.grade}">${r.grade}</span></td>
+      <td><span class="grade ${gcls(r.grade)}">${r.grade}</span></td>
       <td style="font-family:var(--body)">${t?`<span class="pill ${r.result==="win"?"win":"loss"}">${r.result==="win"?"Win":"Loss"}</span> <span class="muted small">${r.exit==="target"&&r.result==="loss"?"hit target, option still down":why[r.exit]}</span>`:`<span class="muted">Never triggered</span>`}</td>
       <td>${t?`${fmtCT(r.entryCT)} @ ${f2(r.entryPx)}`:"—"}</td><td>${t?`${fmtCT(r.exitCT)} @ ${f2(r.exitPx)}`:"—"}</td>
       <td>${t?`$${f2(r.optIn)} → $${f2(r.optOut)}`:"—"}</td><td class="${t?cls(r.pl):""}">${t?smoney(r.pl):"—"}</td></tr>`; }).join("")
     || `<tr><td colspan="7" class="muted" style="text-align:left;font-family:var(--body)">No setups in this filter.</td></tr>`;
+}
+/* Research tickers: graded and simulated every run but not shown as cards. Promote one once its A/A+ record holds up. */
+function researchTable(bt){
+  const R = bt.research; if (!R || !Object.keys(R).length) return "";
+  const m = v => v==null ? "—" : smoney(v), p = v => v==null ? "—" : Math.round(v*100)+"%";
+  const rows = Object.entries(R).map(([s,x])=>{ const t=x.top;
+    return `<tr><td>${esc(s)}</td><td>${x.all.trades}</td><td>${p(x.all.winRate)}</td><td class="${cls(x.all.avg)}">${m(x.all.avg)}</td>
+      <td>${t.all.trades}</td><td>${p(t.all.winRate)}</td><td class="${cls(t.earlier.avg)}">${m(t.earlier.avg)}</td><td class="${cls(t.later.avg)}">${m(t.later.avg)}</td></tr>`; }).join("");
+  const known = Object.keys(R).join(", ");
+  return `<div class="panel-head" style="margin:22px 0 6px"><h3>Research tickers</h3><span class="small muted">Same rules and grades, not shown as cards</span></div>
+    <div class="tablewrap"><table class="bt-cmp"><thead>
+      <tr><th rowspan="2">Ticker</th><th colspan="3" class="grp">All setups, current rules</th><th colspan="4" class="grp">Grade A or A+ only</th></tr>
+      <tr><th>Trades</th><th>Win</th><th>Avg</th><th>Trades</th><th>Win</th><th>Avg earlier</th><th>Avg later</th></tr></thead>
+      <tbody>${rows}</tbody></table></div>
+    <p class="note" style="margin:12px 0 0">${esc(known)} test whether the grade holds up beyond QQQ, SPY and GLD. If A and A+ setups stay positive here, in the later sessions especially, the grade is more likely real than fitted. Treat any row with fewer than about 20 A/A+ trades as too early to judge.</p>`;
 }
 function renderBacktest(){
   const bt = state.market && state.market.backtest; if (!bt) return;
@@ -698,7 +778,7 @@ function renderBacktest(){
   g += `<circle cx="${x(pts.length-1)}" cy="${y(run)}" r="3.5" fill="${col}"/>`;
   g += `<text x="${Lp}" y="${H-6}" font-size="11" fill="var(--muted)">${shortD(pts[0][0])}</text><text x="${W-Rp}" y="${H-6}" font-size="11" fill="var(--muted)" text-anchor="end">${shortD(pts[pts.length-1][0])}</text>`;
   const labels = {grade:"Grade", setup:"Setup", side:"Side", ticker:"Ticker"};
-  const name = (k,v) => k==="side" ? (v==="C"?"Calls":"Puts") : k==="grade" ? `<span class="grade g-${v}">${v}</span>` : v;
+  const name = (k,v) => k==="side" ? (v==="C"?"Calls":"Puts") : k==="grade" ? `<span class="grade ${gcls(v)}">${v}</span>` : v;
   const groupRows = Object.entries(bt.by[by]).map(([k,s])=>`<tr><td>${name(by,k)}</td><td>${s.trades}</td><td>${pctx(s.winRate)}</td><td class="up">${m(s.avgWin)}</td><td class="down">${m(s.avgLoss)}</td><td class="${cls(s.avg)}">${m(s.avg)}</td><td class="${cls(s.total)}">${s.trades?m(s.total):"—"}</td></tr>`).join("");
   const scope = state.btScope || "all";
   const pick = v => scope==="all" ? v : (scope==="C"||scope==="P") ? (v.bySide||{})[scope] : (v.bySetup||{})[scope];
@@ -728,7 +808,7 @@ function renderBacktest(){
       <tr><th rowspan="2">Rule</th><th colspan="3" class="grp">Earlier: ${shortD(bt.from)} – before ${shortD(bt.splitAt)}</th><th colspan="3" class="grp">Later: ${shortD(bt.splitAt)} – ${shortD(bt.to)}</th></tr>
       <tr><th>Trades</th><th>Win</th><th>Avg</th><th>Trades</th><th>Win</th><th>Avg</th></tr></thead>
       <tbody>${variants.map(v=>`<tr class="${v.key==="base"?"is-base":""}"><td>${esc(v.label)}${v.key===best.key?' <span class="pill">best earlier</span>':""}</td>${cmp(v,"earlier")}${cmp(v,"later")}</tr>`).join("")}</tbody></table></div>
-    <p class="note" style="margin:12px 0 0">Pick a rule change from the earlier sessions, then check it on the later ones it wasn't picked from. A change that only wins in the earlier columns is probably luck, and so is any result built on a handful of trades. All option prices are Black-Scholes estimates at the same volatility. ${bt.costs?`Each trade pays estimated costs: half the bid/ask spread on entry and exit (${Object.entries(bt.costs.halfSpread).map(([k,v])=>`${k} $${v.toFixed(2)}`).join(", ")} per share) and $${bt.costs.fee.toFixed(2)} per contract each side. Real spreads widen in fast markets, so fills can still be worse.`:"No bid/ask spread or fees are included, so real results would be worse than shown."} Past results don't predict future ones.</p>`;
+    <p class="note" style="margin:12px 0 0">Pick a rule change from the earlier sessions, then check it on the later ones it wasn't picked from. A change that only wins in the earlier columns is probably luck, and so is any result built on a handful of trades. All option prices are Black-Scholes estimates at the same volatility. ${bt.costs?`Each trade pays estimated costs: half the bid/ask spread on entry and exit (${Object.entries(bt.costs.halfSpread).map(([k,v])=>`${k} $${v.toFixed(2)}`).join(", ")} per share) and $${bt.costs.fee.toFixed(2)} per contract each side. Real spreads widen in fast markets, so fills can still be worse.`:"No bid/ask spread or fees are included, so real results would be worse than shown."} Past results don't predict future ones.</p>${confirmTable(bt)}${researchTable(bt)}`;
   document.querySelectorAll("#bt-by button").forEach(btn=>btn.onclick=()=>{ state.btBy=btn.dataset.by; renderBacktest(); });
   document.querySelectorAll("#bt-scope button").forEach(btn=>btn.onclick=()=>{ state.btScope=btn.dataset.scope; renderBacktest(); });
 }
