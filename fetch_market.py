@@ -171,8 +171,11 @@ def _T(t_end, dte):
 
 
 BASE = {"dte": 0, "tgt": 1.0, "stop": 0.25, "entry": (9, 45), "timeStop": None, "minTgt": 0.15, "skipNear": None,
-        "anchor": "entry", "skipPast": False, "trend": False, "skipSetups": (), "minScore": 0, "minConfirm": 0}
+        "anchor": "entry", "skipPast": False, "trend": False, "skipSetups": (), "minScore": 0, "minConfirm": 0,
+        "skipOpenPivot": False, "noEntry": None}
 # skipSetups: (ticker or "*", setup name) pairs that are not traded
+# skipOpenPivot: a pivot setup whose trigger is the opening bar (closes 8:45 CT) is not traded
+# noEntry: (from, to) ET bar-close times; a setup whose trigger falls inside the window is not traded
 # anchor "entry": target and stop are measured from the actual fill, so an entry that gaps or runs past
 # the trigger cannot land beyond its own target. "trigger" was the original rule.
 # Each variant changes one rule from BASE. Times are ET bar-close times (CT + 1 hour).
@@ -197,6 +200,8 @@ VARIANTS = [
     ("half", "Target halfway to the next level", {"tgt": 0.5}),
     ("wide", "Wider stop: ½ expected move", {"stop": 0.5}),
     ("late", "Enter only from 9:30 CT", {"entry": (10, 30)}),
+    ("openpivot", "Skip pivot setups that trigger on the opening bar (8:45 CT)", {"skipOpenPivot": True}),
+    ("midmorning", "Skip setups that trigger between 10:00 and noon CT", {"noEntry": ((11, 0), (13, 0))}),
     ("tstop", "Time stop: exit at 11:00 CT if nothing hit", {"timeStop": (12, 0)}),
     ("min35", "Target at least ⅓ of the expected move away", {"minTgt": 0.35}),
     ("min50", "Target at least ½ of the expected move away", {"minTgt": 0.5}),
@@ -284,6 +289,10 @@ def simulate(sym, lv, bars, rules):
             cf = confirmations(lv, call, px0, bars[i0][6])
             row.update(grade=GRADES[score], score=score, conf=sum(1 << k for k, name in enumerate(CONFIRMS) if cf[name]))
             if score < rules["minScore"] or sum(cf.values()) < rules["minConfirm"]:
+                row["result"] = "skipped"; rows.append(row); continue
+            hm = (t0.hour, t0.minute)
+            if (rules["skipOpenPivot"] and tag.startswith("Pivot") and hm == (9, 45)) or \
+                    (rules["noEntry"] and rules["noEntry"][0] <= hm < rules["noEntry"][1]):
                 row["result"] = "skipped"; rows.append(row); continue
             if rules["skipPast"] and ((px0 >= tgt) if call else (px0 <= tgt)):
                 row["result"] = "skipped"; rows.append(row); continue
